@@ -37,8 +37,8 @@ L.Icon.Default.mergeOptions({
 // ─────────────────────────────────────────────────────────────
 //  CONFIGURATION
 // ─────────────────────────────────────────────────────────────
-const API_BASE   = "http://localhost:8000/api";
-const WS_URL     = "ws://localhost:8000/ws";
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
+const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8000/ws";
 const RPI_WS_URL = "ws://localhost:8765";
 const DEFAULT_LAT = 14.7167;
 const DEFAULT_LNG = -17.4677;

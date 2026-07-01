@@ -34,7 +34,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
-
+# Ajoutez en haut du fichier, après les imports
+import os
 # ─────────────────────────────────────────────────────────────
 #  CONFIGURATION
 # ─────────────────────────────────────────────────────────────
@@ -48,6 +49,7 @@ DATABASE_URL = "sqlite:///./drones.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -924,6 +926,7 @@ app = FastAPI(title="Drone C2 API", version="2.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
+     allow_origins=["*"],  
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
@@ -1666,7 +1669,7 @@ async def health():
         "mavlink_armed": mavlink_manager.get_armed_status()
     }
 
-
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
