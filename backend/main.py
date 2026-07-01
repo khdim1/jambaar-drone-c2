@@ -1681,7 +1681,6 @@ else:
     async def root():
         return {"message": "Bienvenue sur JAMBAAR API", "docs": "/docs"}
     
-    # Servir les fichiers depuis le dossier frontend/dist même s'il n'existe pas
     @app.get("/{path:path}")
     async def catch_all(path: str):
         return {"detail": "Frontend non disponible. API disponible sur /docs"}
