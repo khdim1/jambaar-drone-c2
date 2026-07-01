@@ -36,14 +36,6 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from fastapi.staticfiles import StaticFiles
 import os
-
-# Servir les fichiers statiques du frontend
-frontend_path = os.path.join(os.path.dirname(__file__), "../frontend/dist")
-if os.path.exists(frontend_path):
-    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
-    print("✅ Frontend monté sur /")
-else:
-    print(f"⚠️ Dossier frontend/dist introuvable : {frontend_path}")
 # ─────────────────────────────────────────────────────────────
 #  CONFIGURATION
 # ─────────────────────────────────────────────────────────────
@@ -1675,6 +1667,24 @@ async def health():
         "mavlink_connected": mavlink_manager.is_connected,
         "mavlink_armed": mavlink_manager.get_armed_status()
     }
+# Servir les fichiers statiques du frontend
+frontend_path = os.path.join(os.path.dirname(__file__), "../frontend/dist")
+
+# Vérifier si le dossier frontend/dist existe
+if os.path.exists(frontend_path):
+    # Si le frontend est buildé, le servir à la racine
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+    print(f"✅ Frontend servis depuis {frontend_path}")
+else:
+    # Sinon, créer une route simple qui renvoie un message
+    @app.get("/")
+    async def root():
+        return {"message": "Bienvenue sur JAMBAAR API", "docs": "/docs"}
+    
+    # Servir les fichiers depuis le dossier frontend/dist même s'il n'existe pas
+    @app.get("/{path:path}")
+    async def catch_all(path: str):
+        return {"detail": "Frontend non disponible. API disponible sur /docs"}
 
 if __name__ == "__main__":
     import uvicorn
