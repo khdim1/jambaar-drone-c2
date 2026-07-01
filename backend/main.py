@@ -927,7 +927,6 @@ app = FastAPI(title="Drone C2 API", version="2.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
      allow_origins=["*"],  
-    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
