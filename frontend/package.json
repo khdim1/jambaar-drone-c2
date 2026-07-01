@@ -1,23 +1,7 @@
 {
-  "name": "frontend",
-  "version": "1.0.0",
-  "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npx vite build",
     "preview": "vite preview"
-  },
-  "dependencies": {
-    "@aircast-4g/mavlink": "^2.1.0",
-    "leaflet": "^1.9.4",
-    "mavlink": "^1.0.1",
-    "prop-types": "^15.8.1",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-leaflet": "^4.2.1"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.7.0",
-    "vite": "^5.4.21"
   }
 }
