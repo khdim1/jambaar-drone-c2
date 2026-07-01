@@ -34,7 +34,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
-# Ajoutez en haut du fichier, après les imports
+from fastapi.staticfiles import StaticFiles
 import os
 # ─────────────────────────────────────────────────────────────
 #  CONFIGURATION
@@ -1668,6 +1668,13 @@ async def health():
         "mavlink_armed": mavlink_manager.get_armed_status()
     }
 
+# Servir les fichiers statiques du frontend
+frontend_path = os.path.join(os.path.dirname(__file__), "../frontend/dist")
+if os.path.exists(frontend_path):
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+    print("✅ Frontend statique monté sur /")
+else:
+    print(f"⚠️ Dossier frontend/dist introuvable : {frontend_path}")
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
