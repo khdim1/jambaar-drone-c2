@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Mission Planner - Drone C2</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-geosearch@3.9.0/dist/geosearch.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-geosearch@3.9.0/dist/geosearch.umd.js"></script>
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+</head>
+<body>
+    <div class="app">
+        <div class="sidebar">
+            <h2>Mission Planner</h2>
+            <div class="telemetry">
+                <h3>Télémétrie</h3>
+                <div>Lat: <span id="lat">--</span></div>
+                <div>Lon: <span id="lon">--</span></div>
+                <div>Alt: <span id="alt">--</span> m</div>
+            </div>
+            <div class="waypoints">
+                <h3>Waypoints</h3>
+                <ul id="waypoints-list"></ul>
+                <button id="send-mission">🚀 Envoyer la mission</button>
+            </div>
+        </div>
+        <div id="map"></div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>

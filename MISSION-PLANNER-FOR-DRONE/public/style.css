@@ -1,0 +1,40 @@
+body { margin: 0; font-family: sans-serif; }
+.app { display: flex; height: 100vh; }
+.sidebar { width: 280px; background: #1e1e2f; color: white; padding: 1rem; overflow-y: auto; }
+#map { flex: 1; height: 100%; }
+.waypoints ul { list-style: none; padding: 0; }
+.waypoints li { background: #2a2a3a; margin: 0.5rem 0; padding: 0.5rem; border-radius: 4px; cursor: pointer; }
+.waypoints li:hover { background: #3a3a4a; }
+button { background: #2e7d32; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 1rem; }
+button:hover { background: #1b5e20; }
+/* Style pour la barre de recherche */
+.geosearch {
+    position: absolute;
+    top: 20px;
+    left: 50px;
+    z-index: 1000;
+    background: white;
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+.geosearch input {
+    width: 250px;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 14px;
+}
+.geosearch .results {
+    background: white;
+    border: 1px solid #ccc;
+    border-top: none;
+    max-height: 200px;
+    overflow-y: auto;
+}
+.geosearch .results .result {
+    padding: 6px;
+    cursor: pointer;
+}
+.geosearch .results .result:hover {
+    background: #f0f0f0;
+}
