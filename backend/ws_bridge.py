@@ -9,7 +9,7 @@ import json
 import aiohttp
 import time
 
-JETSON_WS = "ws://192.168.1.109:8765"
+JETSON_WS = "ws://100.97.206.1:8765"
 BACKEND_URL = "http://localhost:8000/api/telemetry/update"
 
 command_queue = asyncio.Queue()

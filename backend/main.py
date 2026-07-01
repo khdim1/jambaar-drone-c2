@@ -975,7 +975,7 @@ async def websocket_jetson(ws: WebSocket):
     import websockets
     import asyncio
     
-    JETSON_WS = "ws://192.168.1.109:8765"
+    JETSON_WS = "ws://100.97.206.1:8765"
     
     try:
         async with websockets.connect(JETSON_WS) as jetson:
