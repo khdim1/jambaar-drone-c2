@@ -13,11 +13,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copier tout le backend
 COPY backend/ .
 
-# Copier le frontend buildé
+# Copier le frontend buildé LOCALEMENT
+# Ne pas rebuild, utiliser les fichiers déjà buildés
 COPY frontend/dist/ /app/frontend/dist/
 
 # Vérifier que le frontend est bien copié
 RUN ls -la /app/frontend/dist/
 
-# Démarrer l'application
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
