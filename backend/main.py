@@ -1668,22 +1668,31 @@ async def health():
         "mavlink_armed": mavlink_manager.get_armed_status()
     }
 # Servir les fichiers statiques du frontend
-frontend_path = os.path.join(os.path.dirname(__file__), "../frontend/dist")
+from fastapi.staticfiles import StaticFiles
+import os
 
-# Vérifier si le dossier frontend/dist existe
-if os.path.exists(frontend_path):
-    # Si le frontend est buildé, le servir à la racine
+# Chemin absolu vers le frontend dans le conteneur Docker
+frontend_path = "/app/frontend/dist"
+
+# Servir le frontend à la racine
+if os.path.exists(frontend_path) and os.path.exists(os.path.join(frontend_path, "index.html")):
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
     print(f"✅ Frontend servis depuis {frontend_path}")
 else:
-    # Sinon, créer une route simple qui renvoie un message
-    @app.get("/")
-    async def root():
-        return {"message": "Bienvenue sur JAMBAAR API", "docs": "/docs"}
-    
-    @app.get("/{path:path}")
-    async def catch_all(path: str):
-        return {"detail": "Frontend non disponible. API disponible sur /docs"}
+    # Fallback : servir le frontend depuis le dossier local
+    local_frontend = os.path.join(os.path.dirname(__file__), "../frontend/dist")
+    if os.path.exists(local_frontend) and os.path.exists(os.path.join(local_frontend, "index.html")):
+        app.mount("/", StaticFiles(directory=local_frontend, html=True), name="frontend")
+        print(f"✅ Frontend servis depuis {local_frontend}")
+    else:
+        print(f"❌ Frontend non trouvé ni dans {frontend_path} ni dans {local_frontend}")
+        @app.get("/")
+        async def root():
+            return {"message": "Bienvenue sur JAMBAAR API", "docs": "/docs"}
+        
+        @app.get("/{path:path}")
+        async def catch_all(path: str):
+            return {"detail": "Frontend non disponible. API disponible sur /docs"}
 
 if __name__ == "__main__":
     import uvicorn
