@@ -526,24 +526,6 @@ class MavlinkManager:
 # ─────────────────────────────────────────────────────────────
 mavlink_manager = MavlinkManager()
 
-# Ajouter dans MavlinkManager
-def connect_rpi_ws(self, url: str) -> bool:
-    try:
-        import websockets
-        import asyncio
-        
-        async def connect():
-            async with websockets.connect(url) as websocket:
-                print(f"✅ WebSocket connecté à {url}")
-                # Ici, le code pour lire les messages
-                async for message in websocket:
-                    print(f"📥 Message reçu: {message}")
-        
-        asyncio.run(connect())
-        return True
-    except Exception as e:
-        print(f"❌ Erreur WebSocket: {e}")
-        return False
 # ─────────────────────────────────────────────────────────────
 #  SERIALIZER
 # ─────────────────────────────────────────────────────────────
@@ -889,22 +871,29 @@ async def _armed_ack_callback(armed: bool):
         "armed": armed,
         "timestamp": datetime.utcnow().isoformat()
     })
-async def send_command_to_bridge(command: str, params: dict = None) -> bool:
-    """Envoie une commande au bridge HTTP (ws_bridge.py)"""
+
+# ─────────────────────────────────────────────────────────────
+#  COMMANDE DIRECTE VERS LE JETSON VIA WEBSOCKET
+# ─────────────────────────────────────────────────────────────
+JETSON_WS_URL = "ws://100.97.206.1:8765"
+
+async def send_command_to_jetson(command: str, params: dict = None) -> bool:
+    """Envoie une commande directement au Jetson via WebSocket"""
     try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            data = {"command": command, "params": params or {}}
-            async with session.post("http://localhost:8767/command", json=data) as response:
-                if response.status == 200:
-                    print(f"✅ Commande envoyée au bridge: {command}")
-                    return True
-                else:
-                    print(f"❌ Erreur bridge: {response.status}")
-                    return False
+        import websockets
+        params = params or {}
+        cmd_msg = json.dumps({"command": command, "params": params})
+        
+        print(f"📤 Connexion au Jetson: {JETSON_WS_URL}")
+        async with websockets.connect(JETSON_WS_URL, ping_interval=20, ping_timeout=60) as websocket:
+            print(f"✅ Connecté au Jetson, envoi de la commande: {command}")
+            await websocket.send(cmd_msg)
+            print(f"✅ Commande envoyée au Jetson: {command}")
+            return True
     except Exception as e:
-        print(f"❌ Erreur commande: {e}")
+        print(f"❌ Erreur envoi au Jetson: {e}")
         return False
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
@@ -967,6 +956,10 @@ async def login(req: LoginRequest):
 @app.get("/api/auth/me")
 async def me(user=Depends(get_user)):
     return user
+
+# ─────────────────────────────────────────────────────────────
+#  WEBSOCKET PROXY JETSON (pour le frontend)
+# ─────────────────────────────────────────────────────────────
 @app.websocket("/ws/jetson")
 async def websocket_jetson(ws: WebSocket):
     await ws.accept()
@@ -1147,11 +1140,11 @@ async def send_command(drone_id: str, cmd: DroneCommand,
         status="sent"
     ))
 
-    # Si c'est le drone USB, envoyer via le bridge HTTP
+    # Si c'est le drone USB, envoyer directement au Jetson via WebSocket
     if drone_id == "USB-DRONE":
-        success = await send_command_to_bridge(cmd.action, cmd.params)
+        success = await send_command_to_jetson(cmd.action, cmd.params)
         if not success:
-            raise HTTPException(500, "Échec de la commande via bridge")
+            raise HTTPException(500, "Échec de la commande via WebSocket")
         
         # Mettre à jour l'état local
         if cmd.action == "takeoff":
@@ -1181,7 +1174,7 @@ async def send_command(drone_id: str, cmd: DroneCommand,
 
         return {
             "status": "ok",
-            "message": f"Commande {cmd.action} envoyée au FC",
+            "message": f"Commande {cmd.action} envoyée au FC via WebSocket",
             "drone": serialize(drone),
             "armed": drone.armed
         }
@@ -1598,6 +1591,7 @@ async def get_maintenances(drone_id: str, db: Session = Depends(get_db), user=De
 
 # ─────────────────────────────────────────────────────────────
 #  WEBSOCKET
+# ─────────────────────────────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await manager.connect(ws)
@@ -1656,6 +1650,8 @@ async def websocket_endpoint(ws: WebSocket):
     except Exception as e:
         print(f"[WS] Erreur: {e}")
         manager.disconnect(ws)
+
+# ─────────────────────────────────────────────────────────────
 #  HEALTH
 # ─────────────────────────────────────────────────────────────
 @app.get("/health")
@@ -1667,7 +1663,10 @@ async def health():
         "mavlink_connected": mavlink_manager.is_connected,
         "mavlink_armed": mavlink_manager.get_armed_status()
     }
-# Servir les fichiers statiques du frontend
+
+# ─────────────────────────────────────────────────────────────
+#  FRONTEND STATIC FILES
+# ─────────────────────────────────────────────────────────────
 from fastapi.staticfiles import StaticFiles
 import os
 
@@ -1694,6 +1693,9 @@ else:
         async def catch_all(path: str):
             return {"detail": "Frontend non disponible. API disponible sur /docs"}
 
+# ─────────────────────────────────────────────────────────────
+#  MAIN EXECUTION
+# ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
