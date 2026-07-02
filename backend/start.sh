@@ -4,7 +4,7 @@
 tailscaled --state=/var/lib/tailscale/tailscaled.state &
 sleep 5
 
-# Se connecter avec la clé
+# Connecter Render à Tailscale
 tailscale up --authkey=${TAILSCALE_AUTHKEY} --accept-routes
 
 # Démarrer l'application
