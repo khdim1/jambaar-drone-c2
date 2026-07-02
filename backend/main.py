@@ -876,22 +876,39 @@ async def _armed_ack_callback(armed: bool):
 #  COMMANDE DIRECTE VERS LE JETSON VIA WEBSOCKET
 # ─────────────────────────────────────────────────────────────
 JETSON_WS_URL = "ws://100.97.206.1:8766"
-
 async def send_command_to_jetson(command: str, params: dict = None) -> bool:
     """Envoie une commande directement au Jetson via WebSocket"""
+    import traceback
     try:
         import websockets
         params = params or {}
         cmd_msg = json.dumps({"command": command, "params": params})
         
         print(f"📤 Connexion au Jetson: {JETSON_WS_URL}")
-        async with websockets.connect(JETSON_WS_URL, ping_interval=20, ping_timeout=60) as websocket:
-            print(f"✅ Connecté au Jetson, envoi de la commande: {command}")
+        
+        # Ajouter un timeout
+        async with websockets.connect(
+            JETSON_WS_URL, 
+            ping_interval=20, 
+            ping_timeout=30,
+            close_timeout=10,
+            max_size=2**20
+        ) as websocket:
+            print(f"✅ Connecté au Jetson, envoi: {command}")
             await websocket.send(cmd_msg)
-            print(f"✅ Commande envoyée au Jetson: {command}")
+            print(f"✅ Commande envoyée: {command}")
+            
+            # Attendre une réponse (timeout 5s)
+            try:
+                response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+                print(f"📥 Réponse du Jetson: {response[:100]}")
+            except asyncio.TimeoutError:
+                print("⏳ Pas de réponse du Jetson (timeout)")
+            
             return True
     except Exception as e:
-        print(f"❌ Erreur envoi au Jetson: {e}")
+        print(f"❌ Erreur envoi au Jetson: {type(e).__name__}: {e}")
+        print(f"📋 Détails: {traceback.format_exc()}")
         return False
 
 @asynccontextmanager
@@ -993,6 +1010,32 @@ async def websocket_jetson(ws: WebSocket):
     except Exception as e:
         print(f"❌ Erreur: {e}")
         await ws.close()
+
+        @app.get("/api/test/jetson")
+async def test_jetson_connection():
+    """Teste la connexion au Jetson"""
+    import websockets
+    try:
+        async with websockets.connect(
+            JETSON_WS_URL,
+            ping_interval=10,
+            ping_timeout=10,
+            close_timeout=5
+        ) as ws:
+            await ws.send(json.dumps({"command": "ping"}))
+            response = await asyncio.wait_for(ws.recv(), timeout=5.0)
+            return {
+                "status": "connected",
+                "url": JETSON_WS_URL,
+                "response": response
+            }
+    except Exception as e:
+        return {
+            "status": "error",
+            "url": JETSON_WS_URL,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
 import asyncio
 import websockets
 
