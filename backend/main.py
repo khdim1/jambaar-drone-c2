@@ -1045,7 +1045,20 @@ async def mavlink_status(user=Depends(get_user)):
         "telemetry": mavlink_manager.telemetry,
         "armed": mavlink_manager.get_armed_status()
     }
-
+@app.get("/api/test/jetson")
+async def test_jetson_connection():
+    try:
+        import websockets
+        import os
+        url = os.environ.get("JETSON_WS_URL", "wss://open-bracelets-lonely-tutorials.trycloudflare.com")
+        print(f"🔍 Test de connexion à: {url}")
+        
+        async with websockets.connect(url, timeout=10) as ws:
+            await ws.send(json.dumps({"command": "ping"}))
+            response = await asyncio.wait_for(ws.recv(), timeout=5)
+            return {"status": "connected", "response": response, "url": url}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "url": url}
 
 # ─────────────────────────────────────────────────────────────
 #  BASE STATION ROUTES
