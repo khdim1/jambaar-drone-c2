@@ -875,7 +875,7 @@ async def _armed_ack_callback(armed: bool):
 # ─────────────────────────────────────────────────────────────
 #  COMMANDE DIRECTE VERS LE JETSON VIA WEBSOCKET
 # ─────────────────────────────────────────────────────────────
-JETSON_WS_URL = "ws://100.97.206.1:8765"
+JETSON_WS_URL = "ws://100.97.206.1:8766"
 
 async def send_command_to_jetson(command: str, params: dict = None) -> bool:
     """Envoie une commande directement au Jetson via WebSocket"""
@@ -993,7 +993,20 @@ async def websocket_jetson(ws: WebSocket):
     except Exception as e:
         print(f"❌ Erreur: {e}")
         await ws.close()
+import asyncio
+import websockets
 
+async def test_jetson_connection():
+    """Teste la connexion au Jetson"""
+    try:
+        async with websockets.connect("ws://100.97.206.1:8765", timeout=5) as ws:
+            await ws.send(json.dumps({"command": "ping"}))
+            response = await ws.recv()
+            print(f"✅ Jetson répond: {response}")
+            return True
+    except Exception as e:
+        print(f"❌ Jetson inaccessible: {e}")
+        return False
 # ─────────────────────────────────────────────────────────────
 #  MAVLINK CONNECTION ROUTES
 # ─────────────────────────────────────────────────────────────
