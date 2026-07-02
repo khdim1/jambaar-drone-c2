@@ -3,7 +3,7 @@
 DRONE C2 — BACKEND FASTAPI COMPLET AVEC MAVLINK RÉEL
 Support : USB Direct, RPi WebSocket, Jetson Nano
 VERSION CORRIGÉE : ARM/DISARM/TAKEOFF fiables
-- Support WebSocket direct via pymavlink
+- Support WebSocket direct via Cloudflare Tunnel
 - Support TCP avec websockify
 - COMMAND_ACK (msg 77) renvoie l'état réel du FC via WebSocket
 =============================================================
@@ -36,12 +36,16 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from fastapi.staticfiles import StaticFiles
 import os
+
 # ─────────────────────────────────────────────────────────────
 #  CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 DEFAULT_LAT = 14.7167
 DEFAULT_LNG = -17.4677
 DATABASE_URL = "sqlite:///./drones.db"
+
+# Cloudflare Tunnel URL (variable d'environnement)
+JETSON_WS_URL = os.environ.get("JETSON_WS_URL", "wss://open-bracelets-lonely-tutorials.trycloudflare.com")
 
 # ─────────────────────────────────────────────────────────────
 #  DATABASE SETUP
@@ -847,6 +851,34 @@ class DroneSimulator:
 
 
 # ─────────────────────────────────────────────────────────────
+#  ENVOI DE COMMANDE VERS LE JETSON VIA CLOUDFLARE TUNNEL
+# ─────────────────────────────────────────────────────────────
+async def send_command_to_jetson(command: str, params: dict = None) -> bool:
+    """Envoie une commande au Jetson via Cloudflare Tunnel"""
+    try:
+        import websockets
+        params = params or {}
+        cmd_msg = json.dumps({"command": command, "params": params})
+        
+        print(f"📤 Connexion au Jetson via Cloudflare: {JETSON_WS_URL}")
+        
+        async with websockets.connect(
+            JETSON_WS_URL,
+            ping_interval=20,
+            ping_timeout=30,
+            close_timeout=10,
+            max_size=2**20
+        ) as websocket:
+            print(f"✅ Connecté au Jetson, envoi: {command}")
+            await websocket.send(cmd_msg)
+            print(f"✅ Commande envoyée: {command}")
+            return True
+    except Exception as e:
+        print(f"❌ Erreur envoi au Jetson via Cloudflare: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────────────────────
 #  APP SETUP
 # ─────────────────────────────────────────────────────────────
 simulator = DroneSimulator(manager)
@@ -872,45 +904,6 @@ async def _armed_ack_callback(armed: bool):
         "timestamp": datetime.utcnow().isoformat()
     })
 
-# ─────────────────────────────────────────────────────────────
-#  COMMANDE DIRECTE VERS LE JETSON VIA WEBSOCKET
-# ─────────────────────────────────────────────────────────────
-JETSON_WS_URL = "ws://100.97.206.1:8766"
-async def send_command_to_jetson(command: str, params: dict = None) -> bool:
-    """Envoie une commande directement au Jetson via WebSocket"""
-    import traceback
-    try:
-        import websockets
-        params = params or {}
-        cmd_msg = json.dumps({"command": command, "params": params})
-        
-        print(f"📤 Connexion au Jetson: {JETSON_WS_URL}")
-        
-        # Ajouter un timeout
-        async with websockets.connect(
-            JETSON_WS_URL, 
-            ping_interval=20, 
-            ping_timeout=30,
-            close_timeout=10,
-            max_size=2**20
-        ) as websocket:
-            print(f"✅ Connecté au Jetson, envoi: {command}")
-            await websocket.send(cmd_msg)
-            print(f"✅ Commande envoyée: {command}")
-            
-            # Attendre une réponse (timeout 5s)
-            try:
-                response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                print(f"📥 Réponse du Jetson: {response[:100]}")
-            except asyncio.TimeoutError:
-                print("⏳ Pas de réponse du Jetson (timeout)")
-            
-            return True
-    except Exception as e:
-        print(f"❌ Erreur envoi au Jetson: {type(e).__name__}: {e}")
-        print(f"📋 Détails: {traceback.format_exc()}")
-        return False
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
@@ -932,7 +925,7 @@ app = FastAPI(title="Drone C2 API", version="2.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-     allow_origins=["*"],  
+    allow_origins=["*"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -974,6 +967,7 @@ async def login(req: LoginRequest):
 async def me(user=Depends(get_user)):
     return user
 
+
 # ─────────────────────────────────────────────────────────────
 #  WEBSOCKET PROXY JETSON (pour le frontend)
 # ─────────────────────────────────────────────────────────────
@@ -985,11 +979,9 @@ async def websocket_jetson(ws: WebSocket):
     import websockets
     import asyncio
     
-    JETSON_WS = "ws://100.97.206.1:8765"
-    
     try:
-        async with websockets.connect(JETSON_WS) as jetson:
-            print(f"✅ Connecté au Jetson sur {JETSON_WS}")
+        async with websockets.connect(JETSON_WS_URL) as jetson:
+            print(f"✅ Connecté au Jetson via Cloudflare: {JETSON_WS_URL}")
             
             async def forward_to_jetson():
                 while True:
@@ -1011,45 +1003,7 @@ async def websocket_jetson(ws: WebSocket):
         print(f"❌ Erreur: {e}")
         await ws.close()
 
-        @app.get("/api/test/jetson")
-async def test_jetson_connection():
-    """Teste la connexion au Jetson"""
-    import websockets
-    try:
-        async with websockets.connect(
-            JETSON_WS_URL,
-            ping_interval=10,
-            ping_timeout=10,
-            close_timeout=5
-        ) as ws:
-            await ws.send(json.dumps({"command": "ping"}))
-            response = await asyncio.wait_for(ws.recv(), timeout=5.0)
-            return {
-                "status": "connected",
-                "url": JETSON_WS_URL,
-                "response": response
-            }
-    except Exception as e:
-        return {
-            "status": "error",
-            "url": JETSON_WS_URL,
-            "error": str(e),
-            "error_type": type(e).__name__
-        }
-import asyncio
-import websockets
 
-async def test_jetson_connection():
-    """Teste la connexion au Jetson"""
-    try:
-        async with websockets.connect("ws://100.97.206.1:8765", timeout=5) as ws:
-            await ws.send(json.dumps({"command": "ping"}))
-            response = await ws.recv()
-            print(f"✅ Jetson répond: {response}")
-            return True
-    except Exception as e:
-        print(f"❌ Jetson inaccessible: {e}")
-        return False
 # ─────────────────────────────────────────────────────────────
 #  MAVLINK CONNECTION ROUTES
 # ─────────────────────────────────────────────────────────────
@@ -1196,11 +1150,11 @@ async def send_command(drone_id: str, cmd: DroneCommand,
         status="sent"
     ))
 
-    # Si c'est le drone USB, envoyer directement au Jetson via WebSocket
+    # Si c'est le drone USB, envoyer via Cloudflare Tunnel
     if drone_id == "USB-DRONE":
         success = await send_command_to_jetson(cmd.action, cmd.params)
         if not success:
-            raise HTTPException(500, "Échec de la commande via WebSocket")
+            raise HTTPException(500, "Échec de la commande via Cloudflare Tunnel")
         
         # Mettre à jour l'état local
         if cmd.action == "takeoff":
@@ -1230,7 +1184,7 @@ async def send_command(drone_id: str, cmd: DroneCommand,
 
         return {
             "status": "ok",
-            "message": f"Commande {cmd.action} envoyée au FC via WebSocket",
+            "message": f"Commande {cmd.action} envoyée au FC via Cloudflare",
             "drone": serialize(drone),
             "armed": drone.armed
         }
@@ -1579,6 +1533,7 @@ async def update_telemetry(data: dict):
     })
     
     return {"status": "ok"}
+
 # ─────────────────────────────────────────────────────────────
 #  FLIGHTS & MAINTENANCE ROUTES
 # ─────────────────────────────────────────────────────────────
@@ -1676,7 +1631,6 @@ async def websocket_endpoint(ws: WebSocket):
             await asyncio.sleep(0.5)
             if mavlink_manager.is_connected:
                 tel = mavlink_manager.telemetry
-                # Envoyer la télémétrie en temps réel
                 await manager.broadcast({
                     "type": "telemetry",
                     "drones": [{
@@ -1707,6 +1661,7 @@ async def websocket_endpoint(ws: WebSocket):
         print(f"[WS] Erreur: {e}")
         manager.disconnect(ws)
 
+
 # ─────────────────────────────────────────────────────────────
 #  HEALTH
 # ─────────────────────────────────────────────────────────────
@@ -1720,12 +1675,10 @@ async def health():
         "mavlink_armed": mavlink_manager.get_armed_status()
     }
 
+
 # ─────────────────────────────────────────────────────────────
 #  FRONTEND STATIC FILES
 # ─────────────────────────────────────────────────────────────
-from fastapi.staticfiles import StaticFiles
-import os
-
 # Chemin absolu vers le frontend dans le conteneur Docker
 frontend_path = "/app/frontend/dist"
 
@@ -1748,6 +1701,7 @@ else:
         @app.get("/{path:path}")
         async def catch_all(path: str):
             return {"detail": "Frontend non disponible. API disponible sur /docs"}
+
 
 # ─────────────────────────────────────────────────────────────
 #  MAIN EXECUTION
