@@ -1061,21 +1061,79 @@ function useMavlink(onLog, onArmedChange) {
     }
   }, [baudRate, processBuffer]);
 
-  // ── Connexion RPi (WebSocket) ─────────────────────────────
-  const connectRpi = useCallback(() => {
+ // ── Connexion RPi (WebSocket) ─────────────────────────────
+const connectRpi = useCallback(() => {
     const ws = new WebSocket(rpiUrl);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
-    ws.onopen  = () => { setMode("rpi"); setConnected(true); setStatus(`RPi connecté — ${rpiUrl}`); log(`✅ WS RPi: ${rpiUrl}`, "recv"); };
-    ws.onmessage = (ev) => { if (ev.data instanceof ArrayBuffer) processBuffer(new Uint8Array(ev.data)); };
-    ws.onerror = () => log("Erreur WebSocket RPi", "error");
-    ws.onclose = () => {
-      setConnected(false); setStatus("RPi déconnecté — reconnexion 5s");
-      log("WebSocket RPi fermé, tentative dans 5s", "error");
-      reconnTimRef.current = setTimeout(() => connectRpi(), 5000);
-    };
-  }, [rpiUrl, processBuffer]);
 
+    ws.onopen = () => {
+        setMode("rpi");
+        setConnected(true);
+        setStatus(`RPi connecté — ${rpiUrl}`);
+        log(`✅ WS RPi: ${rpiUrl}`, "recv");
+    };
+
+    ws.onmessage = (ev) => {
+        // Cas 1 : message binaire (MAVLink brut)
+        if (ev.data instanceof ArrayBuffer) {
+            processBuffer(new Uint8Array(ev.data));
+            return;
+        }
+
+        // Cas 2 : message JSON (télémétrie envoyée par le bridge Python)
+        if (typeof ev.data === "string") {
+            try {
+                const msg = JSON.parse(ev.data);
+
+                // Message de télémétrie complet
+                if (msg.type === "telemetry" && Array.isArray(msg.drones) && msg.drones[0]) {
+                    const d = msg.drones[0];
+                    setTelemetry(prev => ({
+                        ...prev,
+                        latitude:      d.latitude      || 0,
+                        longitude:     d.longitude     || 0,
+                        altitude:      d.altitude      || 0,
+                        speed:         d.speed         || 0,
+                        groundspeed:   d.speed         || 0,
+                        heading:       d.heading       || 0,
+                        battery:       d.battery       || 0,
+                        voltage:       d.voltage       || 0,
+                        armed:         d.armed         || false,
+                        flightMode:    d.flightMode    || "UNKNOWN",
+                        satellites:    d.satellites    || 0,
+                        gps_lock:      d.gps_locked    || false,
+                        roll:          d.roll          || 0,
+                        pitch:         d.pitch         || 0,
+                    }));
+
+                    // Synchroniser l'état armé via le vote majority
+                    if (typeof d.armed === "boolean") {
+                        pushArmedVote(d.armed);
+                    }
+                    return;
+                }
+
+                // Réponse à une commande (arm, disarm, takeoff, etc.)
+                if (msg.status) {
+                    log(`📥 Bridge: ${msg.status}${msg.message ? " — " + msg.message : ""}`, "recv");
+                    return;
+                }
+            } catch (e) {
+                // Message non-JSON, on ignore
+            }
+        }
+    };
+
+    ws.onerror = () => log("Erreur WebSocket RPi", "error");
+
+    ws.onclose = () => {
+        setConnected(false);
+        setStatus("RPi déconnecté — reconnexion 5s");
+        log("WebSocket RPi fermé, tentative dans 5s", "error");
+        reconnTimRef.current = setTimeout(() => connectRpi(), 5000);
+    };
+}, [rpiUrl, processBuffer, log, pushArmedVote]);
   // ── Déconnexion ────────────────────────────────────────────
   const disconnect = useCallback(async () => {
     clearTimeout(reconnTimRef.current);
