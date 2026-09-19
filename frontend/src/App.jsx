@@ -1865,6 +1865,14 @@ export default function App() {
   useEffect(()=>{ if(!user) return; loadAll(); const t=setInterval(loadAll,10000); return()=>clearInterval(t); },[user,loadAll]);
 
   useEffect(()=>{
+      // ─────────── COMPTEURS ET DÉRIVÉS (obligatoires pour le rendu) ───────────
+  const flyingCount   = drones.filter(d => d.status === "flying").length;
+  const activeAlerts  = alerts.filter(a => a.status === "active");
+  const redAlerts     = activeAlerts.filter(a => a.level === "red");
+  const totalKm       = drones.reduce((s, d) => s + (d.total_distance || 0), 0).toFixed(1);
+  const activeMission = selDrone
+    ? missions.find(m => m.id === selDrone.active_mission_id && m.status === "active")
+    : null;
     if(!user) return;
     const connect=()=>{
       const ws=new WebSocket(WS_URL);
@@ -2113,98 +2121,80 @@ const handleWsMsg = useCallback((msg) => {
       console.warn("Sync armed backend:", e.message);
     }
   }, []);
-// ──────────────── FONCTION sendCommand CORRIGÉE ──────────────
+
 const sendCommand = useCallback(async (action, params = {}) => {
   if (!selDrone) return;
 
+  // ─── Drone RÉEL (branché au bridge MAVLink) ───
   if (selDrone.id === "USB-DRONE") {
     if (!mav.connected) {
       notify("error", "Non connecté", "Branchez le contrôleur");
       return;
     }
 
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      notify("error", "WebSocket non connecté", "Reconnectez le RPi");
+      return;
+    }
+
     try {
-      console.log(`📤 Envoi commande ${action} via WebSocket RPi...`);
-
-      // Envoyer la commande au bridge en JSON
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        notify("error", "WebSocket non connecté", "Reconnectez le RPi");
-        return;
-      }
-
+      console.log(`📤 [CMD] ${action} → bridge`);
       ws.send(JSON.stringify({ command: action, params }));
-      console.log(`✅ Commande ${action} envoyée au bridge`);
 
-      // Mise à jour locale de l'état (pour l'UI)
       switch (action) {
-        case "arm": {
+        case "arm":
           setArmedState(true);
-          setDrones(prev => prev.map(d =>
-            d.id === "USB-DRONE" ? { ...d, armed: true, status: "flying" } : d
-          ));
+          setDrones(p => p.map(d => d.id === "USB-DRONE"
+            ? { ...d, armed: true, status: "flying" } : d));
           notify("success", "✅ Drone armé", "Moteurs prêts", 3000);
           break;
-        }
 
-        case "disarm": {
+        case "disarm":
           setArmedState(false);
-          setDrones(prev => prev.map(d =>
-            d.id === "USB-DRONE" ? { ...d, armed: false, status: "idle" } : d
-          ));
+          setDrones(p => p.map(d => d.id === "USB-DRONE"
+            ? { ...d, armed: false, status: "idle" } : d));
           notify("success", "🔐 Drone désarmé", "Moteurs arrêtés", 3000);
           break;
-        }
 
         case "takeoff": {
           const alt = params.altitude || 10;
-          setDrones(prev => prev.map(d =>
-            d.id === "USB-DRONE" ? { ...d, status: "flying", altitude: alt } : d
-          ));
-          notify("success", "🚀 Décollage", `Altitude cible : ${alt}m`, 3000);
+          setDrones(p => p.map(d => d.id === "USB-DRONE"
+            ? { ...d, status: "flying", altitude: alt } : d));
+          notify("success", "🚀 Décollage", `Altitude cible : ${alt} m`, 3000);
           break;
         }
 
-        case "land": {
-          setDrones(prev => prev.map(d =>
-            d.id === "USB-DRONE" ? { ...d, status: "landing" } : d
-          ));
+        case "land":
+          setDrones(p => p.map(d => d.id === "USB-DRONE"
+            ? { ...d, status: "landing" } : d));
           notify("success", "🛬 Atterrissage", "Descente initiée", 3000);
           break;
-        }
 
-        case "rtl": {
-          setDrones(prev => prev.map(d =>
-            d.id === "USB-DRONE" ? { ...d, status: "returning" } : d
-          ));
+        case "rtl":
+          setDrones(p => p.map(d => d.id === "USB-DRONE"
+            ? { ...d, status: "returning" } : d));
           notify("success", "🏠 RTL", "Retour à la base", 3000);
           break;
-        }
 
         case "loiter":
-        case "hover": {
+        case "hover":
           notify("success", "⏸ Stationnaire", "Mode LOITER", 3000);
           break;
-        }
 
-        case "mode": {
-          notify("info", "Mode " + (params.mode || "?"), "", 3000);
+        case "mode":
+          notify("info", `Mode ${params.mode || "?"}`, "", 3000);
           break;
-        }
 
         case "emergency":
-        case "emergency_rtl": {
-          setDrones(prev => prev.map(d =>
-            d.id === "USB-DRONE" ? { ...d, status: "emergency" } : d
-          ));
+        case "emergency_rtl":
+          setDrones(p => p.map(d => d.id === "USB-DRONE"
+            ? { ...d, status: "emergency" } : d));
           notify("warning", "⚠️ URGENCE", "RTL immédiat déclenché", 5000);
           break;
-        }
 
-        default: {
-          console.warn(`⚠️ Commande non supportée: ${action}`);
+        default:
           notify("warn", "Commande", `${action} non supportée`);
-        }
       }
     } catch (e) {
       console.error("❌ Erreur envoi commande:", e);
@@ -2213,10 +2203,9 @@ const sendCommand = useCallback(async (action, params = {}) => {
     return;
   }
 
-  // Pour les autres drones (non-USB), on ne fait RIEN
-  // (les simulations ont été supprimées)
+  // ─── Autres drones : aucun support (simulations supprimées) ───
   notify("warn", "Drone non supporté", `${selDrone.id} n'est pas un drone réel`);
-}, [selDrone, mav, notify]);
+}, [selDrone, mav, notify]);   // ⚠️ PAS de armedState ici
   // ── Rendu final ────────────────────────────────────────────
   return (
     <div className="app">
