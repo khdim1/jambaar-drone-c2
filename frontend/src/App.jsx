@@ -2163,58 +2163,76 @@ const sendCommand = useCallback(async (action, params = {}) => {
           notify("success", "🔐 Drone désarmé", "Moteurs arrêtés", 3000);
           break;
         }
+case "takeoff": {
+  if (!armedState) {
+    notify("error", "Drone non armé", "Armez d'abord le drone");
+    return;
+  }
+  const alt = params.altitude || 120;
+  console.log(`🚀 TAKEOFF ${alt}m`);
+  try {
+    await api.sendCommand("USB-DRONE", "takeoff", { altitude: alt });
+    setDrones(prev => prev.map(d =>
+      d.id === "USB-DRONE" ? { ...d, status: "flying", altitude: alt } : d
+    ));
+    notify("success", "🚀 Décollage", `Altitude cible : ${alt}m`, 3000);
+  } catch (e) {
+    console.error("❌ TAKEOFF échoué:", e);
+    notify("error", "Décollage échoué", e.message);
+  }
+  break;
+}
+       case "land": {
+  console.log("🛬 LAND");
+  try {
+    await api.sendCommand("USB-DRONE", "land", {});
+    setDrones(prev => prev.map(d =>
+      d.id === "USB-DRONE" ? { ...d, status: "landing" } : d
+    ));
+    notify("success", "🛬 Atterrissage", "Descente initiée", 3000);
+  } catch (e) {
+    notify("error", "Atterrissage échoué", e.message);
+  }
+  break;
+}
 
-        case "takeoff": {
-          if (!armedState) {
-            notify("error", "Drone non armé", "Armez d'abord le drone");
-            return;
-          }
-          const alt = params.altitude || 120;
-          console.log(`🚀 TAKEOFF ${alt}m`);
-          await mav.commands.takeoff(alt);
-          setDrones(prev => prev.map(d =>
-            d.id === "USB-DRONE" ? { ...d, status: "flying", altitude: alt } : d
-          ));
-          notify("success", "🚀 Décollage", `Altitude cible : ${alt}m`, 3000);
-          break;
-        }
-
-        case "land": {
-          console.log("🛬 LAND → envoi MAVLink");
-          await mav.commands.land();
-          setDrones(prev => prev.map(d =>
-            d.id === "USB-DRONE" ? { ...d, status: "landing" } : d
-          ));
-          notify("success", "🛬 Atterrissage", "Descente initiée", 3000);
-          break;
-        }
-
-        case "rtl": {
-          console.log("🏠 RTL → envoi MAVLink");
-          await mav.commands.rtl();
-          setDrones(prev => prev.map(d =>
-            d.id === "USB-DRONE" ? { ...d, status: "returning" } : d
-          ));
-          notify("success", "🏠 RTL", "Retour à la base", 3000);
-          break;
-        }
-
+      case "rtl": {
+  console.log("🏠 RTL");
+  try {
+    await api.sendCommand("USB-DRONE", "rtl", {});
+    setDrones(prev => prev.map(d =>
+      d.id === "USB-DRONE" ? { ...d, status: "returning" } : d
+    ));
+    notify("success", "🏠 RTL", "Retour à la base", 3000);
+  } catch (e) {
+    notify("error", "RTL échoué", e.message);
+  }
+  break;
+}
         case "hover": {
-          console.log("⏸ HOVER → envoi MAVLink");
-          await mav.commands.setMode("LOITER");
-          notify("success", "⏸ Stationnaire", "Mode LOITER", 3000);
-          break;
-        }
+  console.log("⏸ HOVER");
+  try {
+    await api.sendCommand("USB-DRONE", "hover", {});
+    notify("success", "⏸ Stationnaire", "Mode LOITER", 3000);
+  } catch (e) {
+    notify("error", "HOVER échoué", e.message);
+  }
+  break;
+}
 
         case "emergency": {
-          console.log("⚠️ URGENCE → RTL immédiat");
-          await mav.commands.rtl();
-          setDrones(prev => prev.map(d =>
-            d.id === "USB-DRONE" ? { ...d, status: "emergency" } : d
-          ));
-          notify("warning", "⚠️ URGENCE", "RTL immédiat déclenché", 5000);
-          break;
-        }
+  console.log("⚠️ URGENCE RTL");
+  try {
+    await api.sendCommand("USB-DRONE", "rtl", {});
+    setDrones(prev => prev.map(d =>
+      d.id === "USB-DRONE" ? { ...d, status: "emergency" } : d
+    ));
+    notify("warning", "⚠️ URGENCE", "RTL immédiat déclenché", 5000);
+  } catch (e) {
+    notify("error", "URGENCE échouée", e.message);
+  }
+  break;
+}
 
         default: {
           console.warn(`⚠️ Commande non supportée pour USB: ${action}`);
