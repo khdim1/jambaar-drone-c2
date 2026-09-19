@@ -1863,16 +1863,7 @@ export default function App() {
   }, [notify]);
 
   useEffect(()=>{ if(!user) return; loadAll(); const t=setInterval(loadAll,10000); return()=>clearInterval(t); },[user,loadAll]);
-
   useEffect(()=>{
-      // ─────────── COMPTEURS ET DÉRIVÉS (obligatoires pour le rendu) ───────────
-  const flyingCount   = drones.filter(d => d.status === "flying").length;
-  const activeAlerts  = alerts.filter(a => a.status === "active");
-  const redAlerts     = activeAlerts.filter(a => a.level === "red");
-  const totalKm       = drones.reduce((s, d) => s + (d.total_distance || 0), 0).toFixed(1);
-  const activeMission = selDrone
-    ? missions.find(m => m.id === selDrone.active_mission_id && m.status === "active")
-    : null;
     if(!user) return;
     const connect=()=>{
       const ws=new WebSocket(WS_URL);
