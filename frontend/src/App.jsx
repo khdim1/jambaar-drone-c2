@@ -1863,6 +1863,7 @@ export default function App() {
   }, [notify]);
 
   useEffect(()=>{ if(!user) return; loadAll(); const t=setInterval(loadAll,10000); return()=>clearInterval(t); },[user,loadAll]);
+
   useEffect(()=>{
     if(!user) return;
     const connect=()=>{
@@ -2113,90 +2114,193 @@ const handleWsMsg = useCallback((msg) => {
     }
   }, []);
 
+ // ──────────────── FONCTION sendCommand CORRIGÉE ──────────────
 const sendCommand = useCallback(async (action, params = {}) => {
   if (!selDrone) return;
 
-  // ─── Drone RÉEL (branché au bridge MAVLink) ───
   if (selDrone.id === "USB-DRONE") {
     if (!mav.connected) {
       notify("error", "Non connecté", "Branchez le contrôleur");
       return;
     }
-
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      notify("error", "WebSocket non connecté", "Reconnectez le RPi");
-      return;
-    }
-
     try {
-      console.log(`📤 [CMD] ${action} → bridge`);
-      ws.send(JSON.stringify({ command: action, params }));
-
       switch (action) {
-        case "arm":
+        case "arm": {
+          console.log("🔑 ARM → envoi MAVLink");
+          await mav.commands.arm();
+          await new Promise(r => setTimeout(r, 500));
           setArmedState(true);
-          setDrones(p => p.map(d => d.id === "USB-DRONE"
-            ? { ...d, armed: true, status: "flying" } : d));
+          setDrones(prev => prev.map(d =>
+            d.id === "USB-DRONE" ? { ...d, armed: true, status: "flying" } : d
+          ));
+          // Synchronisation avec le backend (optionnel)
+          try {
+            await api.sendCommand("USB-DRONE", "arm", {});
+          } catch (e) {
+            console.warn("Backend sync:", e.message);
+          }
           notify("success", "✅ Drone armé", "Moteurs prêts", 3000);
-          break;
-
-        case "disarm":
-          setArmedState(false);
-          setDrones(p => p.map(d => d.id === "USB-DRONE"
-            ? { ...d, armed: false, status: "idle" } : d));
-          notify("success", "🔐 Drone désarmé", "Moteurs arrêtés", 3000);
-          break;
-
-        case "takeoff": {
-          const alt = params.altitude || 10;
-          setDrones(p => p.map(d => d.id === "USB-DRONE"
-            ? { ...d, status: "flying", altitude: alt } : d));
-          notify("success", "🚀 Décollage", `Altitude cible : ${alt} m`, 3000);
           break;
         }
 
-        case "land":
-          setDrones(p => p.map(d => d.id === "USB-DRONE"
-            ? { ...d, status: "landing" } : d));
+        case "disarm": {
+          console.log("🔐 DISARM → envoi MAVLink");
+          // Couper le throttle
+          const zeroThrottle = [1500, 1500, 1500, 1000, 1500, 1500, 1500, 1500];
+          await mav.commands.sendRCOverride(zeroThrottle);
+          await new Promise(r => setTimeout(r, 300));
+          await mav.commands.disarm();
+          await new Promise(r => setTimeout(r, 500));
+          setArmedState(false);
+          setDrones(prev => prev.map(d =>
+            d.id === "USB-DRONE" ? { ...d, armed: false, status: "idle" } : d
+          ));
+          try {
+            await api.sendCommand("USB-DRONE", "disarm", {});
+          } catch (e) {
+            console.warn("Backend sync:", e.message);
+          }
+          notify("success", "🔐 Drone désarmé", "Moteurs arrêtés", 3000);
+          break;
+        }
+
+        case "takeoff": {
+          if (!armedState) {
+            notify("error", "Drone non armé", "Armez d'abord le drone");
+            return;
+          }
+          const alt = params.altitude || 120;
+          console.log(`🚀 TAKEOFF ${alt}m`);
+          await mav.commands.takeoff(alt);
+          setDrones(prev => prev.map(d =>
+            d.id === "USB-DRONE" ? { ...d, status: "flying", altitude: alt } : d
+          ));
+          notify("success", "🚀 Décollage", `Altitude cible : ${alt}m`, 3000);
+          break;
+        }
+
+        case "land": {
+          console.log("🛬 LAND → envoi MAVLink");
+          await mav.commands.land();
+          setDrones(prev => prev.map(d =>
+            d.id === "USB-DRONE" ? { ...d, status: "landing" } : d
+          ));
           notify("success", "🛬 Atterrissage", "Descente initiée", 3000);
           break;
+        }
 
-        case "rtl":
-          setDrones(p => p.map(d => d.id === "USB-DRONE"
-            ? { ...d, status: "returning" } : d));
+        case "rtl": {
+          console.log("🏠 RTL → envoi MAVLink");
+          await mav.commands.rtl();
+          setDrones(prev => prev.map(d =>
+            d.id === "USB-DRONE" ? { ...d, status: "returning" } : d
+          ));
           notify("success", "🏠 RTL", "Retour à la base", 3000);
           break;
+        }
 
-        case "loiter":
-        case "hover":
+        case "hover": {
+          console.log("⏸ HOVER → envoi MAVLink");
+          await mav.commands.setMode("LOITER");
           notify("success", "⏸ Stationnaire", "Mode LOITER", 3000);
           break;
+        }
 
-        case "mode":
-          notify("info", `Mode ${params.mode || "?"}`, "", 3000);
-          break;
-
-        case "emergency":
-        case "emergency_rtl":
-          setDrones(p => p.map(d => d.id === "USB-DRONE"
-            ? { ...d, status: "emergency" } : d));
+        case "emergency": {
+          console.log("⚠️ URGENCE → RTL immédiat");
+          await mav.commands.rtl();
+          setDrones(prev => prev.map(d =>
+            d.id === "USB-DRONE" ? { ...d, status: "emergency" } : d
+          ));
           notify("warning", "⚠️ URGENCE", "RTL immédiat déclenché", 5000);
           break;
+        }
 
-        default:
-          notify("warn", "Commande", `${action} non supportée`);
+        default: {
+          console.warn(`⚠️ Commande non supportée pour USB: ${action}`);
+          notify("warn", "Commande", `${action} non supportée USB`);
+        }
       }
     } catch (e) {
-      console.error("❌ Erreur envoi commande:", e);
-      notify("error", "Erreur", e.message);
+      console.error("❌ Erreur MAVLink:", e);
+      notify("error", "Erreur MAVLink", e.message);
     }
     return;
   }
 
-  // ─── Autres drones : aucun support (simulations supprimées) ───
-  notify("warn", "Drone non supporté", `${selDrone.id} n'est pas un drone réel`);
-}, [selDrone, mav, notify]);   // ⚠️ PAS de armedState ici
+  // Drones simulés (backend)
+  try {
+    await api.sendCommand(selDrone.id, action, params);
+    notify("success", "Commande envoyée", action.toUpperCase(), 4000);
+  } catch (e) {
+    console.error("❌ Erreur API:", e);
+    notify("error", "Commande échouée", e.message);
+  }
+}, [selDrone, mav, armedState, notify]);
+
+  const ackAlert = async (id) => {
+    try { await api.ackAlert(id); setAlerts(p=>p.map(a=>a.id===id?{...a,status:"acknowledged"}:a)); notify("info","Alerte acquittée","",3000); }
+    catch(e) { notify("error","Erreur",e.message); }
+  };
+
+  const cancelMission = async (missionId, droneId) => {
+    if(!window.confirm("Annuler cette mission ?")) return;
+    try { await api.cancelMission(missionId); setMissionRoutes(p=>{const n={...p};delete n[droneId];return n;}); loadAll(); }
+    catch(e) { notify("error","Erreur",e.message); }
+  };
+
+  useEffect(()=>{
+    if(selDrone&&typeof selDrone.latitude==="number"&&isFinite(selDrone.latitude)&&selDrone.latitude!==0) {
+      setMapCenter([selDrone.latitude,selDrone.longitude]);
+      setMapZoom(12);
+    }
+  },[selectedDroneId]);
+
+  const onMissionCreated = useCallback((res,droneId,wps)=>{
+    setMissionRoutes(p=>({...p,[droneId]:wps}));
+    loadAll();
+  },[loadAll]);
+
+  const flyingCount   = drones.filter(d=>d.status==="flying").length;
+  const activeAlerts  = alerts.filter(a=>a.status==="active");
+  const redAlerts     = activeAlerts.filter(a=>a.level==="red");
+  const totalKm       = drones.reduce((s,d)=>s+(d.total_distance||0),0).toFixed(1);
+  const activeMission = selDrone ? missions.find(m=>m.id===selDrone.active_mission_id&&m.status==="active") : null;
+
+  if(!user) return <LoginScreen onLogin={(u,token)=>{_token=token;setUser(u);}}/>;
+
+  // ─── Boutons ARM/DISARM/TAKEOFF partagés ─────────────────
+  // armed = armedState (source de vérité via vote majority MAVLink)
+  const ArmButton = ({ compact=false }) => {
+    const style = compact ? {padding:"6px 12px",fontSize:10} : {};
+    return (
+      <button
+        className={`cbtn ${armedState ? "armed-active" : "ok"}`}
+        style={style}
+        disabled={!mav.connected}
+        onClick={() => sendCommand(armedState ? "disarm" : "arm")}
+      >
+        {armedState ? "🔐 Désarmer" : "🔑 Armer"}
+      </button>
+    );
+  };
+
+  const TakeoffButton = ({ compact=false }) => {
+    const style = compact ? {padding:"6px 12px",fontSize:10} : {};
+    return (
+      <button
+        className="cbtn ok"
+        style={style}
+        // Décollage désactivé si non armé ou non connecté
+        disabled={!mav.connected || !armedState}
+        title={!armedState ? "Armez le drone d'abord" : "Décollage à 120m"}
+        onClick={() => sendCommand("takeoff", { altitude: 120 })}
+      >
+        🚀 Décollage {!armedState && "🔒"}
+      </button>
+    );
+  };
+
   // ── Rendu final ────────────────────────────────────────────
   return (
     <div className="app">
