@@ -2128,10 +2128,11 @@ const handleWsMsg = useCallback((msg) => {
     }
   }, []);
 
-// ──────────────── FONCTION sendCommand CORRIGÉE ──────────────
+// ──────────────── FONCTION sendCommand — version finale ──────────────
 const sendCommand = useCallback(async (action, params = {}) => {
   if (!selDrone) return;
 
+  // ═══ Drone RÉEL (USB-DRONE) — TOUT via backend API (JSON) ═══
   if (selDrone.id === "USB-DRONE") {
     if (!mav.connected) {
       notify("error", "Non connecté", "Branchez le contrôleur");
@@ -2140,136 +2141,96 @@ const sendCommand = useCallback(async (action, params = {}) => {
 
     try {
       switch (action) {
-        // ─── ARM ────────────────────────────────────────────
+        // ─── ARM ────────────────────────────────────────
         case "arm": {
-          console.log("🔑 ARM → MAVLink + backend");
-          await mav.commands.arm();
-          await new Promise(r => setTimeout(r, 500));
+          console.log("🔑 ARM → backend API");
+          await api.sendCommand("USB-DRONE", "arm", {});
           setArmedState(true);
           setDrones(prev => prev.map(d =>
             d.id === "USB-DRONE" ? { ...d, armed: true, status: "flying" } : d
           ));
-          try {
-            await api.sendCommand("USB-DRONE", "arm", {});
-          } catch (e) {
-            console.warn("Backend sync:", e.message);
-          }
           notify("success", "✅ Drone armé", "Moteurs prêts", 3000);
           break;
         }
 
-        // ─── DISARM ─────────────────────────────────────────
+        // ─── DISARM ─────────────────────────────────────
         case "disarm": {
-          console.log("🔐 DISARM → MAVLink + backend");
-          const zeroThrottle = [1500, 1500, 1500, 1000, 1500, 1500, 1500, 1500];
-          await mav.commands.sendRCOverride(zeroThrottle);
-          await new Promise(r => setTimeout(r, 300));
-          await mav.commands.disarm();
-          await new Promise(r => setTimeout(r, 500));
+          console.log("🔐 DISARM → backend API");
+          await api.sendCommand("USB-DRONE", "disarm", {});
           setArmedState(false);
           setDrones(prev => prev.map(d =>
             d.id === "USB-DRONE" ? { ...d, armed: false, status: "idle" } : d
           ));
-          try {
-            await api.sendCommand("USB-DRONE", "disarm", {});
-          } catch (e) {
-            console.warn("Backend sync:", e.message);
-          }
           notify("success", "🔐 Drone désarmé", "Moteurs arrêtés", 3000);
           break;
         }
 
-        // ─── TAKEOFF ────────────────────────────────────────
+        // ─── TAKEOFF ────────────────────────────────────
         case "takeoff": {
           if (!armedState) {
             notify("error", "Drone non armé", "Armez d'abord le drone");
             return;
           }
           const alt = params.altitude || 120;
-          console.log(`🚀 TAKEOFF ${alt}m → backend`);
-          try {
-            await api.sendCommand("USB-DRONE", "takeoff", { altitude: alt });
-            setDrones(prev => prev.map(d =>
-              d.id === "USB-DRONE" ? { ...d, status: "flying", altitude: alt } : d
-            ));
-            notify("success", "🚀 Décollage", `Altitude cible : ${alt}m`, 3000);
-          } catch (e) {
-            console.error("❌ TAKEOFF échoué:", e);
-            notify("error", "Décollage échoué", e.message);
-          }
+          console.log(`🚀 TAKEOFF ${alt}m → backend API`);
+          await api.sendCommand("USB-DRONE", "takeoff", { altitude: alt });
+          setDrones(prev => prev.map(d =>
+            d.id === "USB-DRONE" ? { ...d, status: "flying", altitude: alt } : d
+          ));
+          notify("success", "🚀 Décollage", `Altitude cible : ${alt}m`, 3000);
           break;
         }
 
-        // ─── LAND ───────────────────────────────────────────
+        // ─── LAND ───────────────────────────────────────
         case "land": {
-          console.log("🛬 LAND → backend");
-          try {
-            await api.sendCommand("USB-DRONE", "land", {});
-            setDrones(prev => prev.map(d =>
-              d.id === "USB-DRONE" ? { ...d, status: "landing" } : d
-            ));
-            notify("success", "🛬 Atterrissage", "Descente initiée", 3000);
-          } catch (e) {
-            notify("error", "Atterrissage échoué", e.message);
-          }
+          console.log("🛬 LAND → backend API");
+          await api.sendCommand("USB-DRONE", "land", {});
+          setDrones(prev => prev.map(d =>
+            d.id === "USB-DRONE" ? { ...d, status: "landing" } : d
+          ));
+          notify("success", "🛬 Atterrissage", "Descente initiée", 3000);
           break;
         }
 
-        // ─── RTL ────────────────────────────────────────────
+        // ─── RTL ────────────────────────────────────────
         case "rtl": {
-          console.log("🏠 RTL → backend");
-          try {
-            await api.sendCommand("USB-DRONE", "rtl", {});
-            setDrones(prev => prev.map(d =>
-              d.id === "USB-DRONE" ? { ...d, status: "returning" } : d
-            ));
-            notify("success", "🏠 RTL", "Retour à la base", 3000);
-          } catch (e) {
-            notify("error", "RTL échoué", e.message);
-          }
+          console.log("🏠 RTL → backend API");
+          await api.sendCommand("USB-DRONE", "rtl", {});
+          setDrones(prev => prev.map(d =>
+            d.id === "USB-DRONE" ? { ...d, status: "returning" } : d
+          ));
+          notify("success", "🏠 RTL", "Retour à la base", 3000);
           break;
         }
 
-        // ─── HOVER / LOITER ─────────────────────────────────
+        // ─── HOVER / LOITER ─────────────────────────────
         case "hover":
         case "loiter": {
-          console.log("⏸ HOVER → backend");
-          try {
-            await api.sendCommand("USB-DRONE", "hover", {});
-            notify("success", "⏸ Stationnaire", "Mode LOITER", 3000);
-          } catch (e) {
-            notify("error", "HOVER échoué", e.message);
-          }
+          console.log("⏸ HOVER → backend API");
+          await api.sendCommand("USB-DRONE", "hover", {});
+          notify("success", "⏸ Stationnaire", "Mode LOITER", 3000);
           break;
         }
 
-        // ─── MODE (GUIDED, LOITER, RTL, LAND, AUTO...) ──────
+        // ─── MODE ───────────────────────────────────────
         case "mode": {
           const modeName = (params.mode || "GUIDED").toUpperCase();
-          console.log(`🔄 MODE ${modeName} → backend`);
-          try {
-            await api.sendCommand("USB-DRONE", "mode", { mode: modeName });
-            notify("info", `Mode ${modeName}`, "Envoyé au FC", 3000);
-          } catch (e) {
-            notify("error", "Mode échoué", e.message);
-          }
+          console.log(`🔄 MODE ${modeName} → backend API`);
+          await api.sendCommand("USB-DRONE", "mode", { mode: modeName });
+          notify("info", `Mode ${modeName}`, "Envoyé au FC", 3000);
           break;
         }
 
-        // ─── SPEED ──────────────────────────────────────────
+        // ─── SPEED ──────────────────────────────────────
         case "speed": {
           const speed = params.speed || 10;
-          console.log(`⚡ SPEED ${speed} m/s → backend`);
-          try {
-            await api.sendCommand("USB-DRONE", "speed", { speed });
-            notify("info", `Vitesse ${speed} m/s`, "Envoyé au FC", 3000);
-          } catch (e) {
-            notify("error", "Vitesse échouée", e.message);
-          }
+          console.log(`⚡ SPEED ${speed} m/s → backend API`);
+          await api.sendCommand("USB-DRONE", "speed", { speed });
+          notify("info", `Vitesse ${speed} m/s`, "Envoyé au FC", 3000);
           break;
         }
 
-        // ─── PARAM ──────────────────────────────────────────
+        // ─── PARAM ──────────────────────────────────────
         case "param": {
           const pname = params.name;
           const pval = params.value;
@@ -2277,46 +2238,38 @@ const sendCommand = useCallback(async (action, params = {}) => {
             notify("error", "Param invalide", "Nom et valeur requis");
             return;
           }
-          console.log(`⚙️ PARAM ${pname}=${pval}`);
-          try {
-            await api.sendCommand("USB-DRONE", "param", { name: pname, value: pval });
-            notify("info", `Param ${pname}`, `= ${pval}`, 3000);
-          } catch (e) {
-            notify("error", "Param échoué", e.message);
-          }
+          console.log(`⚙️ PARAM ${pname}=${pval} → backend API`);
+          await api.sendCommand("USB-DRONE", "param", { name: pname, value: pval });
+          notify("info", `Param ${pname}`, `= ${pval}`, 3000);
           break;
         }
 
-        // ─── EMERGENCY ──────────────────────────────────────
+        // ─── EMERGENCY ──────────────────────────────────
         case "emergency":
         case "emergency_rtl": {
-          console.log("⚠️ URGENCE RTL → backend");
-          try {
-            await api.sendCommand("USB-DRONE", "rtl", {});
-            setDrones(prev => prev.map(d =>
-              d.id === "USB-DRONE" ? { ...d, status: "emergency" } : d
-            ));
-            notify("warning", "⚠️ URGENCE", "RTL immédiat déclenché", 5000);
-          } catch (e) {
-            notify("error", "URGENCE échouée", e.message);
-          }
+          console.log("⚠️ URGENCE RTL → backend API");
+          await api.sendCommand("USB-DRONE", "rtl", {});
+          setDrones(prev => prev.map(d =>
+            d.id === "USB-DRONE" ? { ...d, status: "emergency" } : d
+          ));
+          notify("warning", "⚠️ URGENCE", "RTL immédiat déclenché", 5000);
           break;
         }
 
-        // ─── DEFAULT ────────────────────────────────────────
+        // ─── DEFAULT ────────────────────────────────────
         default: {
-          console.warn(`⚠️ Commande non supportée pour USB: ${action}`);
-          notify("warn", "Commande", `${action} non supportée USB`);
+          console.warn(`⚠️ Commande non supportée: ${action}`);
+          notify("warn", "Commande", `${action} non supportée`);
         }
       }
     } catch (e) {
-      console.error("❌ Erreur MAVLink/backend:", e);
-      notify("error", "Erreur", e.message);
+      console.error(`❌ ${action.toUpperCase()} échoué:`, e);
+      notify("error", `${action.toUpperCase()} échoué`, e.message || "Erreur réseau");
     }
     return;
   }
 
-  // ─── Drones simulés (DRONE-001, 002, ...) ─────────────────
+  // ═══ Autres drones (DRONE-001…) — via backend API ═══
   try {
     await api.sendCommand(selDrone.id, action, params);
     notify("success", "Commande envoyée", action.toUpperCase(), 4000);
@@ -2324,7 +2277,7 @@ const sendCommand = useCallback(async (action, params = {}) => {
     console.error("❌ Erreur API:", e);
     notify("error", "Commande échouée", e.message);
   }
-}, [selDrone, mav, armedState, notify]);
+}, [selDrone, mav.connected, armedState, notify]);
   const ackAlert = async (id) => {
     try { await api.ackAlert(id); setAlerts(p=>p.map(a=>a.id===id?{...a,status:"acknowledged"}:a)); notify("info","Alerte acquittée","",3000); }
     catch(e) { notify("error","Erreur",e.message); }
