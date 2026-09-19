@@ -1399,7 +1399,19 @@ function ConsolePanel({ droneId, usbCommands, onNotify, onCommand }) {
   useEffect(()=>{ endRef.current?.scrollIntoView({behavior:"smooth"}); },[logs]);
 
   const addLog = (text,type="recv") => setLogs(p=>[...p.slice(-200),{text,type,ts:new Date()}]);
-
+  const examples = [
+    "arm",
+    "disarm",
+    "takeoff 120",
+    "land",
+    "rtl",
+    "hover",
+    "mode AUTO",
+    "mode GUIDED",
+    "mode LOITER",
+    "mode STABILIZE",
+    "param ARMING_CHECK 0"
+  ];
  const send = async () => {
   if (!input.trim()) return;
   const cmd = input.trim().toLowerCase();
