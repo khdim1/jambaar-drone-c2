@@ -2,63 +2,45 @@
 =============================================================
 DRONE C2 — BACKEND FASTAPI COMPLET AVEC MAVLINK RÉEL
 Support : USB Direct, RPi WebSocket, Jetson Nano
-VERSION CORRIGÉE : ARM/DISARM/TAKEOFF fiables
-- Support WebSocket direct via Cloudflare Tunnel
-- Support TCP avec websockify
-- COMMAND_ACK (msg 77) renvoie l'état réel du FC via WebSocket
+VERSION FINALE CORRIGÉE :
+- Connexion WebSocket stable vers Jetson via Cloudflare Tunnel
+- Commandes ARM/DISARM/TAKEOFF/LAND/RTL/HOVER
+- Télémétrie temps réel avec vote majority anti-flickering
+- Gestion des missions, alertes, logs, paramètres
+- Base de données SQLite intégrée
 =============================================================
 """
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from contextlib import asynccontextmanager
-import asyncio, json, random, uuid, math, threading, queue, time
+import asyncio, json, random, uuid, math, threading, time
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
-import serial
 import serial.tools.list_ports
-
-# ─────────────────────────────────────────────────────────────
-#  MAVLINK IMPORTS (pymavlink)
-# ─────────────────────────────────────────────────────────────
-from pymavlink import mavutil
-
-# ─────────────────────────────────────────────────────────────
-#  DATABASE SETUP
-# ─────────────────────────────────────────────────────────────
-from sqlalchemy import (
-    create_engine, Column, Integer, Float, String,
-    Boolean, DateTime, JSON, ForeignKey, desc, Text
-)
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
-from fastapi.staticfiles import StaticFiles
 import os
 
-# ─────────────────────────────────────────────────────────────
-#  CONFIGURATION
-# ─────────────────────────────────────────────────────────────
+from pymavlink import mavutil
+from sqlalchemy import create_engine, Column, Integer, Float, String, Boolean, DateTime, JSON, ForeignKey, desc
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+from fastapi.staticfiles import StaticFiles
+import jwt
+
+# ─── CONFIGURATION ─────────────────────────────────────────────
 DEFAULT_LAT = 14.7167
 DEFAULT_LNG = -17.4677
 DATABASE_URL = "sqlite:///./drones.db"
-
-# Cloudflare Tunnel URL (variable d'environnement)
 JETSON_WS_URL = os.environ.get("JETSON_WS_URL", "wss://open-bracelets-lonely-tutorials.trycloudflare.com")
 
-# ─────────────────────────────────────────────────────────────
-#  DATABASE SETUP
-# ─────────────────────────────────────────────────────────────
+# ─── BASE DE DONNÉES ───────────────────────────────────────────
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-
-
-# ─────────────────────────────────────────────────────────────
-#  SQLALCHEMY MODELS
-# ─────────────────────────────────────────────────────────────
+# ─── MODÈLES SQLALCHEMY ────────────────────────────────────────
 class DroneDB(Base):
     __tablename__ = "drones"
     id               = Column(String,  primary_key=True, index=True)
@@ -86,7 +68,6 @@ class DroneDB(Base):
     active_waypoint_idx  = Column(Integer, default=0)
     armed            = Column(Boolean, default=False)
 
-
 class MissionDB(Base):
     __tablename__ = "missions"
     id                    = Column(String,  primary_key=True, index=True)
@@ -102,7 +83,6 @@ class MissionDB(Base):
     status                = Column(String,  default="pending")
     created_at            = Column(DateTime, default=datetime.utcnow)
     created_by            = Column(String,  nullable=True)
-
 
 class AlertDB(Base):
     __tablename__ = "alerts"
@@ -121,7 +101,6 @@ class AlertDB(Base):
     acknowledged_by  = Column(String,  nullable=True)
     acknowledged_at  = Column(DateTime, nullable=True)
 
-
 class CommandLogDB(Base):
     __tablename__ = "command_logs"
     id        = Column(String,   primary_key=True, index=True)
@@ -131,7 +110,6 @@ class CommandLogDB(Base):
     sent_by   = Column(String,   default="system")
     timestamp = Column(DateTime, default=datetime.utcnow)
     status    = Column(String,   default="sent")
-
 
 class TelemetryDB(Base):
     __tablename__ = "telemetry"
@@ -146,7 +124,6 @@ class TelemetryDB(Base):
     armed     = Column(Boolean, default=False)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
-
 class DroneParamDB(Base):
     __tablename__ = "drone_params"
     id          = Column(Integer, primary_key=True, autoincrement=True)
@@ -156,7 +133,6 @@ class DroneParamDB(Base):
     param_type  = Column(String,  default="INT32")
     description = Column(String,  default="")
 
-
 class BaseStationDB(Base):
     __tablename__ = "base_station"
     id        = Column(Integer, primary_key=True, autoincrement=True)
@@ -164,7 +140,6 @@ class BaseStationDB(Base):
     latitude  = Column(Float,   default=14.7167)
     longitude = Column(Float,   default=-17.4677)
     altitude  = Column(Float,   default=0.0)
-
 
 class DroneFlightDB(Base):
     __tablename__ = "drone_flights"
@@ -177,7 +152,6 @@ class DroneFlightDB(Base):
     mission_name     = Column(String,   nullable=True)
     trajectory       = Column(JSON,     default=list)
 
-
 class MaintenanceDB(Base):
     __tablename__ = "drone_maintenance"
     id             = Column(Integer,  primary_key=True, autoincrement=True)
@@ -187,10 +161,9 @@ class MaintenanceDB(Base):
     status         = Column(String,   default="pending")
     created_at     = Column(DateTime, default=datetime.utcnow)
 
+Base.metadata.create_all(bind=engine)
 
-# ─────────────────────────────────────────────────────────────
-#  PYDANTIC SCHEMAS
-# ─────────────────────────────────────────────────────────────
+# ─── SCHEMAS PYDANTIC ──────────────────────────────────────────
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -259,46 +232,34 @@ class MavlinkConnection(BaseModel):
 class ArmedUpdate(BaseModel):
     armed: bool
 
-
-# ─────────────────────────────────────────────────────────────
-#  AUTH
-# ─────────────────────────────────────────────────────────────
+# ─── AUTH ──────────────────────────────────────────────────────
 USERS = {
     "admin":     {"password": "admin123", "role": "admin",    "name": "Commandant Diallo"},
     "operateur": {"password": "op123",    "role": "operator", "name": "Lt. Ndiaye"},
     "analyste":  {"password": "an123",    "role": "analyst",  "name": "Sgt. Sarr"},
 }
-
 JWT_SECRET = "votre_cle_secrete"
 ALGORITHM = "HS256"
 
 def create_token(data: dict) -> str:
-    import jwt
     payload = {**data, "exp": datetime.utcnow() + timedelta(hours=12)}
     return jwt.encode(payload, JWT_SECRET, algorithm=ALGORITHM)
 
 def verify_token(token: str) -> Optional[dict]:
-    import jwt
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
     except:
         return None
 
-
-# ─────────────────────────────────────────────────────────────
-#  WEBSOCKET MANAGER
-# ─────────────────────────────────────────────────────────────
+# ─── WEBSOCKET MANAGER ─────────────────────────────────────────
 class ConnectionManager:
     def __init__(self):
         self.connections: List[WebSocket] = []
-
     async def connect(self, ws: WebSocket):
         await ws.accept()
         self.connections.append(ws)
-
     def disconnect(self, ws: WebSocket):
         self.connections = [c for c in self.connections if c is not ws]
-
     async def broadcast(self, data: dict):
         msg = json.dumps(data, default=str)
         dead = []
@@ -309,20 +270,15 @@ class ConnectionManager:
                 dead.append(c)
         for c in dead:
             self.disconnect(c)
-
     async def send_to(self, ws: WebSocket, data: dict):
         try:
             await ws.send_text(json.dumps(data, default=str))
         except Exception:
             self.disconnect(ws)
 
-
 manager = ConnectionManager()
 
-
-# ─────────────────────────────────────────────────────────────
-#  MAVLINK CONNECTION MANAGER
-# ─────────────────────────────────────────────────────────────
+# ─── MAVLINK MANAGER ───────────────────────────────────────────
 class MavlinkManager:
     def __init__(self):
         self.master = None
@@ -403,7 +359,6 @@ class MavlinkManager:
     def _process_message(self, msg):
         try:
             msg_type = msg.get_type()
-
             if msg_type == 'HEARTBEAT':
                 self.telemetry["mode"] = mavutil.mode_string_v10(msg)
                 new_armed = (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) != 0
@@ -411,33 +366,26 @@ class MavlinkManager:
                 self._armed_status = new_armed
                 self._reconnect_attempts = 0
                 print(f"📥 HEARTBEAT: mode={self.telemetry['mode']}, armed={new_armed}")
-
             elif msg_type == 'GLOBAL_POSITION_INT':
                 self.telemetry["latitude"] = msg.lat / 1e7
                 self.telemetry["longitude"] = msg.lon / 1e7
                 self.telemetry["altitude"] = msg.alt / 1000
                 self.telemetry["heading"] = msg.hdg / 100
-
             elif msg_type == 'VFR_HUD':
                 self.telemetry["speed"] = msg.groundspeed
                 self.telemetry["heading"] = msg.heading
                 self.telemetry["altitude"] = msg.alt
-
             elif msg_type == 'SYS_STATUS':
                 self.telemetry["battery"] = msg.battery_remaining
-
             elif msg_type == 'COMMAND_ACK':
                 command = msg.command
                 result = msg.result
                 print(f"📥 COMMAND_ACK: cmd={command}, result={result}")
                 if command == 400:
-                    if result == 0:
-                        print(f"✅ ARM/DISARM ACK accepté — armed={self._armed_status}")
-                        if self._on_armed_ack:
-                            self._on_armed_ack(self._armed_status)
+                    if result == 0 and self._on_armed_ack:
+                        self._on_armed_ack(self._armed_status)
                     else:
                         print(f"⚠️ ARM/DISARM ACK refusé (result={result})")
-
         except Exception as e:
             print(f"⚠️ Erreur traitement message: {e}")
 
@@ -445,14 +393,11 @@ class MavlinkManager:
         if not self.is_connected or not self.master:
             print("❌ MAVLink non connecté")
             return False
-
         params = params or {}
         print(f"📤 Envoi commande: {command}")
-
         try:
             target_system = self.master.target_system
             target_component = self.master.target_component
-
             if command == "arm":
                 self.master.mav.command_long_send(
                     target_system, target_component,
@@ -460,12 +405,10 @@ class MavlinkManager:
                     0, 1, 0, 0, 0, 0, 0, 0
                 )
                 print("🔑 ARM envoyé au FC")
-
             elif command == "disarm":
                 self.master.mav.rc_channels_override_send(
                     target_system, target_component,
-                    1500, 1500, 1500, 1000,
-                    1500, 1500, 1500, 1500
+                    1500, 1500, 1500, 1000, 1500, 1500, 1500, 1500
                 )
                 time.sleep(0.3)
                 self.master.mav.command_long_send(
@@ -474,7 +417,6 @@ class MavlinkManager:
                     0, 0, 0, 0, 0, 0, 0, 0
                 )
                 print("🔐 DISARM envoyé au FC")
-
             elif command == "takeoff":
                 alt = params.get("altitude", 100)
                 self.master.mav.command_long_send(
@@ -483,7 +425,6 @@ class MavlinkManager:
                     0, 0, 0, 0, 0, 0, 0, alt
                 )
                 print(f"🚀 TAKEOFF {alt}m envoyé")
-
             elif command == "land":
                 self.master.mav.command_long_send(
                     target_system, target_component,
@@ -491,7 +432,6 @@ class MavlinkManager:
                     0, 0, 0, 0, 0, 0, 0, 0
                 )
                 print("🛬 LAND envoyé")
-
             elif command == "rtl":
                 self.master.mav.command_long_send(
                     target_system, target_component,
@@ -499,13 +439,10 @@ class MavlinkManager:
                     0, 0, 0, 0, 0, 0, 0, 0
                 )
                 print("🏠 RTL envoyé")
-
             else:
                 print(f"⚠️ Commande inconnue: {command}")
                 return False
-
             return True
-
         except Exception as e:
             print(f"❌ Erreur envoi commande: {e}")
             return False
@@ -524,15 +461,9 @@ class MavlinkManager:
             self.master = None
         print("🔌 MAVLink déconnecté")
 
-
-# ─────────────────────────────────────────────────────────────
-#  GLOBAL MAVLINK MANAGER
-# ─────────────────────────────────────────────────────────────
 mavlink_manager = MavlinkManager()
 
-# ─────────────────────────────────────────────────────────────
-#  SERIALIZER
-# ─────────────────────────────────────────────────────────────
+# ─── UTILITAIRES ──────────────────────────────────────────────
 def serialize(obj) -> dict:
     result = {}
     for k, v in obj.__dict__.items():
@@ -544,10 +475,7 @@ def serialize(obj) -> dict:
             result[k] = v
     return result
 
-
-# ─────────────────────────────────────────────────────────────
-#  DB SEED
-# ─────────────────────────────────────────────────────────────
+# ─── DB SEED ──────────────────────────────────────────────────
 MOCK_DRONES = [
     {"id":"DRONE-001","name":"Diambar",  "model":"DJI Matrice 300 RTK",     "status":"flying",     "latitude":15.5527,"longitude":-13.6729,"altitude":120.0,"battery":78.0, "heading":45, "speed":18.5,"home_lat":15.52,"home_lng":-13.71, "armed": False},
     {"id":"DRONE-002","name":"Ndobine",  "model":"Parrot ANAFI USA",         "status":"flying",     "latitude":14.7645,"longitude":-17.3660,"altitude":95.0, "battery":54.0, "heading":180,"speed":22.1,"home_lat":14.80,"home_lng":-17.40, "armed": False},
@@ -579,12 +507,10 @@ async def seed_db():
         if db.query(BaseStationDB).count() == 0:
             db.add(BaseStationDB(name="Base Principale", latitude=DEFAULT_LAT, longitude=DEFAULT_LNG))
             db.commit()
-
         if db.query(DroneDB).count() == 0:
             for d in MOCK_DRONES:
                 db.add(DroneDB(**d))
             db.commit()
-
         if db.query(DroneDB).filter(DroneDB.id == "USB-DRONE").count() == 0:
             db.add(DroneDB(
                 id="USB-DRONE",
@@ -599,7 +525,6 @@ async def seed_db():
             ))
             db.commit()
             print("✅ Drone USB créé")
-
         if db.query(DroneParamDB).count() == 0:
             for drone in db.query(DroneDB).all():
                 for name, val, typ, desc in DEFAULT_PARAMS:
@@ -611,7 +536,6 @@ async def seed_db():
                         description=desc
                     ))
             db.commit()
-
         if db.query(AlertDB).count() == 0:
             now = datetime.utcnow()
             for i, a in enumerate(MOCK_ALERTS):
@@ -622,14 +546,10 @@ async def seed_db():
                     **a
                 ))
             db.commit()
-
     finally:
         db.close()
 
-
-# ─────────────────────────────────────────────────────────────
-#  SIMULATEUR
-# ─────────────────────────────────────────────────────────────
+# ─── SIMULATEUR ───────────────────────────────────────────────
 class DroneSimulator:
     def __init__(self, mgr: ConnectionManager):
         self.mgr = mgr
@@ -645,7 +565,6 @@ class DroneSimulator:
                 break
             except Exception:
                 await asyncio.sleep(0.5)
-
         while True:
             await asyncio.sleep(0.5)
             self._tick += 1
@@ -675,7 +594,6 @@ class DroneSimulator:
                     self._update_drone(drone, db)
                     armed = self._armed_status.get(drone.id, False)
                     drone.armed = armed
-
                 updates.append({
                     "id": drone.id,
                     "latitude": round(drone.latitude, 6),
@@ -694,7 +612,6 @@ class DroneSimulator:
                     "ai_active": drone.ai_active,
                     "armed": armed,
                 })
-
                 if self._tick % 10 == 0:
                     db.add(TelemetryDB(
                         drone_id=drone.id,
@@ -703,7 +620,6 @@ class DroneSimulator:
                         heading=drone.heading, battery=drone.battery,
                         armed=armed,
                     ))
-
             db.commit()
             await self.mgr.broadcast({
                 "type": "telemetry",
@@ -722,7 +638,6 @@ class DroneSimulator:
             drone.temperature = max(30, min(55, drone.temperature + random.uniform(-0.2, 0.3)))
             drone.signal_strength = max(40, min(100, drone.signal_strength + random.randint(-1, 1)))
             drone.battery = max(0, drone.battery - 0.004)
-
             if drone.active_mission_id:
                 mission = db.query(MissionDB).filter(MissionDB.id == drone.active_mission_id).first()
                 if mission and mission.waypoints and mission.status == "active":
@@ -734,15 +649,12 @@ class DroneSimulator:
                         target_lng = wp["lng"]
                         target_alt = wp.get("alt", mission.altitude)
                         wp_speed = mission.speed
-
                         dlat = target_lat - drone.latitude
                         dlng = target_lng - drone.longitude
                         dist_deg = math.sqrt(dlat**2 + dlng**2)
                         dist_m = dist_deg * 111320
-
                         drone.heading = math.degrees(math.atan2(dlng, dlat)) % 360
                         drone.speed = wp_speed
-
                         move = wp_speed * dt / 111320
                         if dist_m <= wp_speed * dt * 2:
                             drone.latitude = target_lat
@@ -781,11 +693,9 @@ class DroneSimulator:
                 drone.latitude = max(12.0, min(16.7, drone.latitude + move * math.cos(rad)))
                 drone.longitude = max(-17.6, min(-11.4, drone.longitude + move * math.sin(rad)))
                 drone.altitude = max(50, min(200, drone.altitude + random.uniform(-2, 2)))
-
             drone.total_distance += drone.speed * dt / 1000
             if drone.battery < 10:
                 drone.status = "returning"
-
         elif drone.status == "returning":
             dlat = drone.home_lat - drone.latitude
             dlng = drone.home_lng - drone.longitude
@@ -805,7 +715,6 @@ class DroneSimulator:
                 drone.longitude += (dlng / dist) * move
                 drone.altitude = max(0, drone.altitude - 1)
                 drone.battery = max(0, drone.battery - 0.003)
-
         elif drone.status == "charging":
             drone.speed = 0
             drone.altitude = 0
@@ -813,11 +722,9 @@ class DroneSimulator:
             if drone.battery >= 95:
                 drone.status = "idle"
                 self._armed_status[drone.id] = False
-
         elif drone.status == "idle":
             drone.speed = 0
             drone.battery = min(100, drone.battery + 0.01)
-
         drone.last_seen = datetime.utcnow()
 
     async def _maybe_alert(self):
@@ -827,7 +734,7 @@ class DroneSimulator:
             if not flying:
                 return
             drone = random.choice(flying)
-            lvl, typ, desc = random.choice(ALERT_TEMPLATES)
+            lvl, typ, desc = random.choice([("red","intrusion","Intrusion détectée"), ("orange","anomaly","Comportement suspect"), ("yellow","group","Attroupement")])
             aid = str(uuid.uuid4())
             alert = AlertDB(
                 id=aid, drone_id=drone.id, drone_name=drone.name,
@@ -849,38 +756,30 @@ class DroneSimulator:
         finally:
             db.close()
 
-
-# ─────────────────────────────────────────────────────────────
-#  ENVOI DE COMMANDE VERS LE JETSON VIA CLOUDFLARE TUNNEL
-# ─────────────────────────────────────────────────────────────
+# ─── COMMANDE VERS JETSON ─────────────────────────────────────
 async def send_command_to_jetson(command: str, params: dict = None) -> bool:
-    """Envoie une commande au Jetson via Cloudflare Tunnel"""
-    try:
-        import websockets
-        params = params or {}
-        cmd_msg = json.dumps({"command": command, "params": params})
-        
-        print(f"📤 Connexion au Jetson via Cloudflare: {JETSON_WS_URL}")
-        
-        async with websockets.connect(
-            JETSON_WS_URL,
-            ping_interval=20,
-            ping_timeout=30,
-            close_timeout=10,
-            max_size=2**20
-        ) as websocket:
-            print(f"✅ Connecté au Jetson, envoi: {command}")
-            await websocket.send(cmd_msg)
-            print(f"✅ Commande envoyée: {command}")
-            return True
-    except Exception as e:
-        print(f"❌ Erreur envoi au Jetson via Cloudflare: {e}")
-        return False
+    import websockets
+    params = params or {}
+    cmd_msg = json.dumps({"command": command, "params": params})
+    for attempt in range(3):
+        try:
+            print(f"📤 Connexion au Jetson via Cloudflare: {JETSON_WS_URL} (tentative {attempt+1})")
+            async with websockets.connect(
+                JETSON_WS_URL,
+                ping_interval=20,
+                ping_timeout=30,
+                close_timeout=10,
+                max_size=2**20
+            ) as websocket:
+                await websocket.send(cmd_msg)
+                print(f"✅ Commande envoyée: {command}")
+                return True
+        except Exception as e:
+            print(f"❌ Erreur envoi au Jetson (tentative {attempt+1}): {e}")
+            await asyncio.sleep(2)
+    return False
 
-
-# ─────────────────────────────────────────────────────────────
-#  APP SETUP
-# ─────────────────────────────────────────────────────────────
+# ─── LIFESPAN ─────────────────────────────────────────────────
 simulator = DroneSimulator(manager)
 
 async def _armed_ack_callback(armed: bool):
@@ -896,7 +795,6 @@ async def _armed_ack_callback(armed: bool):
         print(f"[ACK_CB] Erreur DB: {e}")
     finally:
         db.close()
-
     await manager.broadcast({
         "type": "armed_ack",
         "drone_id": "USB-DRONE",
@@ -906,31 +804,19 @@ async def _armed_ack_callback(armed: bool):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
     await seed_db()
-
     def sync_armed_ack(armed: bool):
         loop = asyncio.get_event_loop()
         if loop.is_running():
             asyncio.run_coroutine_threadsafe(_armed_ack_callback(armed), loop)
-
     mavlink_manager.set_armed_ack_callback(sync_armed_ack)
-
     asyncio.create_task(simulator.run())
     yield
     mavlink_manager.disconnect()
 
-
+# ─── APPLICATION FASTAPI ──────────────────────────────────────
 app = FastAPI(title="Drone C2 API", version="2.1.0", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 security = HTTPBearer(auto_error=False)
 
 def get_db():
@@ -948,65 +834,91 @@ def get_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(security)):
         return {"sub": "admin", "role": "admin", "name": "Commandant Diallo"}
     return payload
 
-
-# ─────────────────────────────────────────────────────────────
-#  AUTH ROUTES
-# ─────────────────────────────────────────────────────────────
+# ─── ROUTES AUTH ──────────────────────────────────────────────
 @app.post("/api/auth/login", response_model=LoginResponse)
 async def login(req: LoginRequest):
     user = USERS.get(req.username)
     if not user or user["password"] != req.password:
         raise HTTPException(401, "Identifiants incorrects")
     token = create_token({"sub": req.username, "role": user["role"], "name": user["name"]})
-    return LoginResponse(
-        access_token=token, token_type="bearer",
-        user=UserInfo(username=req.username, role=user["role"], name=user["name"])
-    )
+    return LoginResponse(access_token=token, token_type="bearer", user=UserInfo(**user))
 
 @app.get("/api/auth/me")
 async def me(user=Depends(get_user)):
     return user
 
+# ─── WEBSOCKET ─────────────────────────────────────────────────
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await manager.connect(ws)
+    try:
+        db = SessionLocal()
+        drones = db.query(DroneDB).all()
+        alerts = db.query(AlertDB).order_by(desc(AlertDB.timestamp)).limit(30).all()
+        missions = db.query(MissionDB).filter(MissionDB.status == "active").all()
+        db.close()
+        await manager.send_to(ws, {
+            "type": "init",
+            "drones": [serialize(d) for d in drones],
+            "alerts": [serialize(a) for a in alerts],
+            "missions": [serialize(m) for m in missions],
+        })
+        while True:
+            await asyncio.sleep(0.5)
+            if mavlink_manager.is_connected:
+                tel = mavlink_manager.telemetry
+                await manager.broadcast({
+                    "type": "telemetry",
+                    "drones": [{
+                        "id": "USB-DRONE",
+                        "latitude": tel.get("latitude", 0),
+                        "longitude": tel.get("longitude", 0),
+                        "altitude": tel.get("altitude", 0),
+                        "speed": tel.get("speed", 0),
+                        "heading": tel.get("heading", 0),
+                        "battery": tel.get("battery", 0),
+                        "armed": mavlink_manager.get_armed_status(),
+                        "status": "flying" if mavlink_manager.get_armed_status() else "idle"
+                    }],
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+            try:
+                data = await asyncio.wait_for(ws.receive_text(), timeout=0.5)
+                msg = json.loads(data)
+                if msg.get("type") == "ping":
+                    await manager.send_to(ws, {"type": "pong", "timestamp": datetime.utcnow().isoformat()})
+            except asyncio.TimeoutError:
+                pass
+    except WebSocketDisconnect:
+        manager.disconnect(ws)
+    except Exception as e:
+        print(f"[WS] Erreur: {e}")
+        manager.disconnect(ws)
 
-# ─────────────────────────────────────────────────────────────
-#  WEBSOCKET PROXY JETSON (pour le frontend)
-# ─────────────────────────────────────────────────────────────
 @app.websocket("/ws/jetson")
 async def websocket_jetson(ws: WebSocket):
     await ws.accept()
     print("🔗 Client connecté au proxy Jetson")
-    
     import websockets
-    import asyncio
-    
     try:
         async with websockets.connect(JETSON_WS_URL) as jetson:
             print(f"✅ Connecté au Jetson via Cloudflare: {JETSON_WS_URL}")
-            
             async def forward_to_jetson():
                 while True:
                     msg = await ws.receive_text()
                     await jetson.send(msg)
                     response = await jetson.recv()
                     await ws.send_text(response)
-            
             async def forward_to_client():
                 while True:
                     msg = await jetson.recv()
                     await ws.send_text(msg)
-            
-            await asyncio.gather(
-                forward_to_jetson(),
-                forward_to_client()
-            )
+            await asyncio.gather(forward_to_jetson(), forward_to_client())
     except Exception as e:
         print(f"❌ Erreur: {e}")
         await ws.close()
 
-
-# ─────────────────────────────────────────────────────────────
-#  MAVLINK CONNECTION ROUTES
-# ─────────────────────────────────────────────────────────────
+# ─── ROUTES MAVLINK CONNECTION ───────────────────────────────
 @app.post("/api/mavlink/connect")
 async def mavlink_connect(conn: MavlinkConnection, user=Depends(get_user)):
     if conn.type == "usb":
@@ -1022,14 +934,11 @@ async def mavlink_connect(conn: MavlinkConnection, user=Depends(get_user)):
     elif conn.type in ["rpi", "jetson"]:
         if not conn.url:
             raise HTTPException(400, "URL WebSocket requise")
-        print(f"🔌 Tentative de connexion WebSocket à {conn.url}")
         success = mavlink_manager.connect_rpi(conn.url)
     else:
         raise HTTPException(400, "Type de connexion invalide")
-
     if not success:
         raise HTTPException(500, "Échec de connexion MAVLink")
-
     return {"status": "connected", "type": conn.type}
 
 @app.post("/api/mavlink/disconnect")
@@ -1045,14 +954,13 @@ async def mavlink_status(user=Depends(get_user)):
         "telemetry": mavlink_manager.telemetry,
         "armed": mavlink_manager.get_armed_status()
     }
+
 @app.get("/api/test/jetson")
 async def test_jetson_connection():
     try:
         import websockets
-        import os
         url = os.environ.get("JETSON_WS_URL", "wss://open-bracelets-lonely-tutorials.trycloudflare.com")
         print(f"🔍 Test de connexion à: {url}")
-        
         async with websockets.connect(url, timeout=10) as ws:
             await ws.send(json.dumps({"command": "ping"}))
             response = await asyncio.wait_for(ws.recv(), timeout=5)
@@ -1060,9 +968,7 @@ async def test_jetson_connection():
     except Exception as e:
         return {"status": "error", "error": str(e), "url": url}
 
-# ─────────────────────────────────────────────────────────────
-#  BASE STATION ROUTES
-# ─────────────────────────────────────────────────────────────
+# ─── ROUTES BASE STATION ──────────────────────────────────────
 @app.get("/api/base")
 async def get_base(db: Session = Depends(get_db), user=Depends(get_user)):
     base = db.query(BaseStationDB).first()
@@ -1087,10 +993,7 @@ async def update_base(body: BaseStationUpdate, db: Session = Depends(get_db), us
     db.commit()
     return serialize(base)
 
-
-# ─────────────────────────────────────────────────────────────
-#  DRONE ROUTES
-# ─────────────────────────────────────────────────────────────
+# ─── ROUTES DRONES ────────────────────────────────────────────
 @app.get("/api/drones")
 async def get_drones(db: Session = Depends(get_db), user=Depends(get_user)):
     return [serialize(d) for d in db.query(DroneDB).all()]
@@ -1123,8 +1026,7 @@ async def update_drone(drone_id: str, body: dict, db: Session = Depends(get_db),
     return serialize(drone)
 
 @app.patch("/api/drones/{drone_id}/armed")
-async def update_drone_armed(drone_id: str, body: ArmedUpdate,
-                              db: Session = Depends(get_db), user=Depends(get_user)):
+async def update_drone_armed(drone_id: str, body: ArmedUpdate, db: Session = Depends(get_db), user=Depends(get_user)):
     drone = db.query(DroneDB).filter(DroneDB.id == drone_id).first()
     if not drone:
         raise HTTPException(404, "Drone introuvable")
@@ -1140,19 +1042,13 @@ async def update_drone_armed(drone_id: str, body: ArmedUpdate,
     })
     return {"status": "ok", "armed": body.armed}
 
-
-# ─────────────────────────────────────────────────────────────
-#  COMMAND ROUTES
-# ─────────────────────────────────────────────────────────────
+# ─── ROUTES COMMANDES ─────────────────────────────────────────
 @app.post("/api/drones/{drone_id}/command")
-async def send_command(drone_id: str, cmd: DroneCommand,
-                       db: Session = Depends(get_db), user=Depends(get_user)):
+async def send_command(drone_id: str, cmd: DroneCommand, db: Session = Depends(get_db), user=Depends(get_user)):
     drone = db.query(DroneDB).filter(DroneDB.id == drone_id).first()
     if not drone:
         raise HTTPException(404, "Drone introuvable")
-
     print(f"📤 Commande reçue: {cmd.action} pour {drone_id}")
-
     db.add(CommandLogDB(
         id=str(uuid.uuid4()),
         drone_id=drone_id,
@@ -1162,14 +1058,10 @@ async def send_command(drone_id: str, cmd: DroneCommand,
         timestamp=datetime.utcnow(),
         status="sent"
     ))
-
-    # Si c'est le drone USB, envoyer via Cloudflare Tunnel
     if drone_id == "USB-DRONE":
         success = await send_command_to_jetson(cmd.action, cmd.params)
         if not success:
             raise HTTPException(500, "Échec de la commande via Cloudflare Tunnel")
-        
-        # Mettre à jour l'état local
         if cmd.action == "takeoff":
             drone.status = "flying"
             drone.altitude = cmd.params.get("altitude", 100)
@@ -1186,7 +1078,6 @@ async def send_command(drone_id: str, cmd: DroneCommand,
         elif cmd.action == "emergency":
             drone.status = "returning"
         db.commit()
-
         await manager.broadcast({
             "type": "command_ack",
             "drone_id": drone_id,
@@ -1194,14 +1085,7 @@ async def send_command(drone_id: str, cmd: DroneCommand,
             "status": "sent_to_fc",
             "timestamp": datetime.utcnow().isoformat()
         })
-
-        return {
-            "status": "ok",
-            "message": f"Commande {cmd.action} envoyée au FC via Cloudflare",
-            "drone": serialize(drone),
-            "armed": drone.armed
-        }
-
+        return {"status": "ok", "message": f"Commande {cmd.action} envoyée au FC via Cloudflare", "drone": serialize(drone), "armed": drone.armed}
     else:
         # Simulateur pour les autres drones
         if cmd.action == "takeoff":
@@ -1225,16 +1109,13 @@ async def send_command(drone_id: str, cmd: DroneCommand,
         return {"status": "ok", "message": f"Commande {cmd.action} simulée", "drone": serialize(drone)}
 
 @app.post("/api/drones/{drone_id}/command/text")
-async def text_command(drone_id: str, body: TextCommand,
-                       db: Session = Depends(get_db), user=Depends(get_user)):
+async def text_command(drone_id: str, body: TextCommand, db: Session = Depends(get_db), user=Depends(get_user)):
     drone = db.query(DroneDB).filter(DroneDB.id == drone_id).first()
     if not drone:
         raise HTTPException(404, "Drone introuvable")
-
     cmd_text = body.command.strip().lower()
     parts = cmd_text.split()
     action = parts[0] if parts else ""
-
     if action == "takeoff":
         alt = float(parts[1]) if len(parts) > 1 else 100.0
         result = f"Décollage vers {alt}m"
@@ -1259,23 +1140,17 @@ async def text_command(drone_id: str, body: TextCommand,
     else:
         result = f"Commande '{body.command}' reçue"
         params = {}
-
     await send_command(drone_id, DroneCommand(action=action, params=params), db, user)
     return {"response": result, "command": body.command}
 
-
-# ─────────────────────────────────────────────────────────────
-#  MISSION ROUTES
-# ─────────────────────────────────────────────────────────────
+# ─── ROUTES MISSIONS ──────────────────────────────────────────
 @app.post("/api/drones/{drone_id}/mission")
-async def set_mission(drone_id: str, mission: MissionPlan,
-                      db: Session = Depends(get_db), user=Depends(get_user)):
+async def set_mission(drone_id: str, mission: MissionPlan, db: Session = Depends(get_db), user=Depends(get_user)):
     drone = db.query(DroneDB).filter(DroneDB.id == drone_id).first()
     if not drone:
         raise HTTPException(404, "Drone introuvable")
     if not mission.waypoints:
         raise HTTPException(400, "La mission doit avoir au moins un waypoint")
-
     mid = str(uuid.uuid4())
     new_m = MissionDB(
         id=mid, drone_id=drone_id,
@@ -1290,17 +1165,14 @@ async def set_mission(drone_id: str, mission: MissionPlan,
         created_by=user.get("name", "system")
     )
     db.add(new_m)
-
     drone.active_mission_id = mid
     drone.active_waypoint_idx = 0
     drone.status = "flying"
     drone.camera_active = (mission.camera_mode != "off")
     drone.ai_active = mission.ai_detection
-
     if drone_id != "USB-DRONE":
         simulator._armed_status[drone_id] = True
         drone.armed = True
-
     db.commit()
     await manager.broadcast({
         "type": "mission_started",
@@ -1318,8 +1190,7 @@ async def get_missions(db: Session = Depends(get_db), user=Depends(get_user)):
 
 @app.get("/api/drones/{drone_id}/missions")
 async def get_drone_missions(drone_id: str, db: Session = Depends(get_db), user=Depends(get_user)):
-    return [serialize(m) for m in db.query(MissionDB).filter(
-        MissionDB.drone_id == drone_id).order_by(desc(MissionDB.created_at)).all()]
+    return [serialize(m) for m in db.query(MissionDB).filter(MissionDB.drone_id == drone_id).order_by(desc(MissionDB.created_at)).all()]
 
 @app.delete("/api/missions/{mission_id}")
 async def cancel_mission(mission_id: str, db: Session = Depends(get_db), user=Depends(get_user)):
@@ -1338,13 +1209,9 @@ async def cancel_mission(mission_id: str, db: Session = Depends(get_db), user=De
     await manager.broadcast({"type": "mission_cancelled", "mission_id": mission_id})
     return {"status": "cancelled"}
 
-
-# ─────────────────────────────────────────────────────────────
-#  ALERT ROUTES
-# ─────────────────────────────────────────────────────────────
+# ─── ROUTES ALERTES ───────────────────────────────────────────
 @app.get("/api/alerts")
-async def get_alerts(level: Optional[str] = None, status: Optional[str] = None,
-                     limit: int = 50, db: Session = Depends(get_db), user=Depends(get_user)):
+async def get_alerts(level: Optional[str] = None, status: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db), user=Depends(get_user)):
     q = db.query(AlertDB)
     if level:
         q = q.filter(AlertDB.level == level)
@@ -1353,8 +1220,7 @@ async def get_alerts(level: Optional[str] = None, status: Optional[str] = None,
     return [serialize(a) for a in q.order_by(desc(AlertDB.timestamp)).limit(limit).all()]
 
 @app.patch("/api/alerts/{alert_id}")
-async def update_alert(alert_id: str, body: AlertUpdate,
-                       db: Session = Depends(get_db), user=Depends(get_user)):
+async def update_alert(alert_id: str, body: AlertUpdate, db: Session = Depends(get_db), user=Depends(get_user)):
     alert = db.query(AlertDB).filter(AlertDB.id == alert_id).first()
     if not alert:
         raise HTTPException(404, "Alerte introuvable")
@@ -1368,27 +1234,17 @@ async def update_alert(alert_id: str, body: AlertUpdate,
     await manager.broadcast({"type": "alert_updated", "alert": serialize(alert)})
     return serialize(alert)
 
-
-# ─────────────────────────────────────────────────────────────
-#  TELEMETRY & STATS ROUTES
-# ─────────────────────────────────────────────────────────────
+# ─── ROUTES TELEMETRY & STATS ─────────────────────────────────
 @app.get("/api/telemetry/{drone_id}")
-async def get_telemetry(drone_id: str, minutes: int = 30,
-                        db: Session = Depends(get_db), user=Depends(get_user)):
+async def get_telemetry(drone_id: str, minutes: int = 30, db: Session = Depends(get_db), user=Depends(get_user)):
     cutoff = datetime.utcnow() - timedelta(minutes=minutes)
-    records = (db.query(TelemetryDB)
-               .filter(TelemetryDB.drone_id == drone_id,
-                       TelemetryDB.timestamp >= cutoff)
-               .order_by(TelemetryDB.timestamp).all())
+    records = db.query(TelemetryDB).filter(TelemetryDB.drone_id == drone_id, TelemetryDB.timestamp >= cutoff).order_by(TelemetryDB.timestamp).all()
     return [serialize(r) for r in records[-200:]]
 
 @app.get("/api/trajectories/{drone_id}")
 async def get_trajectory(drone_id: str, db: Session = Depends(get_db), user=Depends(get_user)):
-    records = (db.query(TelemetryDB)
-               .filter(TelemetryDB.drone_id == drone_id)
-               .order_by(TelemetryDB.timestamp).all())
-    return [{"lat": r.latitude, "lng": r.longitude, "alt": r.altitude,
-             "time": r.timestamp.isoformat()} for r in records]
+    records = db.query(TelemetryDB).filter(TelemetryDB.drone_id == drone_id).order_by(TelemetryDB.timestamp).all()
+    return [{"lat": r.latitude, "lng": r.longitude, "alt": r.altitude, "time": r.timestamp.isoformat()} for r in records]
 
 @app.get("/api/stats/dashboard")
 async def dashboard_stats(db: Session = Depends(get_db), user=Depends(get_user)):
@@ -1398,8 +1254,7 @@ async def dashboard_stats(db: Session = Depends(get_db), user=Depends(get_user))
     active_a = sum(1 for a in alerts if a.status == "active")
     red_a = sum(1 for a in alerts if a.level == "red" and a.status == "active")
     now = datetime.utcnow()
-    hourly = [{"hour": (now - timedelta(hours=23-i)).strftime("%H:00"),
-               "count": random.randint(0, 5)} for i in range(24)]
+    hourly = [{"hour": (now - timedelta(hours=23-i)).strftime("%H:00"), "count": random.randint(0, 5)} for i in range(24)]
     return {
         "total_drones": len(drones),
         "active_drones": flying,
@@ -1418,96 +1273,67 @@ async def dashboard_stats(db: Session = Depends(get_db), user=Depends(get_user))
         }
     }
 
-
-# ─────────────────────────────────────────────────────────────
-#  LOG ROUTES
-# ─────────────────────────────────────────────────────────────
 @app.get("/api/logs")
 async def get_logs(limit: int = 100, db: Session = Depends(get_db), user=Depends(get_user)):
-    return [serialize(l) for l in
-            db.query(CommandLogDB).order_by(desc(CommandLogDB.timestamp)).limit(limit).all()]
+    return [serialize(l) for l in db.query(CommandLogDB).order_by(desc(CommandLogDB.timestamp)).limit(limit).all()]
 
-
-# ─────────────────────────────────────────────────────────────
-#  MAVLINK PARAMS ROUTES
-# ─────────────────────────────────────────────────────────────
+# ─── ROUTES PARAMS ────────────────────────────────────────────
 @app.get("/api/drones/{drone_id}/params")
 async def get_params(drone_id: str, db: Session = Depends(get_db), user=Depends(get_user)):
     params = db.query(DroneParamDB).filter(DroneParamDB.drone_id == drone_id).all()
-    return [{"name": p.param_name, "value": p.param_value,
-             "type": p.param_type, "description": p.description} for p in params]
+    return [{"name": p.param_name, "value": p.param_value, "type": p.param_type, "description": p.description} for p in params]
 
 @app.post("/api/drones/{drone_id}/param")
-async def set_param(drone_id: str, body: ParamUpdate,
-                    db: Session = Depends(get_db), user=Depends(get_user)):
+async def set_param(drone_id: str, body: ParamUpdate, db: Session = Depends(get_db), user=Depends(get_user)):
     drone = db.query(DroneDB).filter(DroneDB.id == drone_id).first()
     if not drone:
         raise HTTPException(404, "Drone introuvable")
-    p = db.query(DroneParamDB).filter(
-        DroneParamDB.drone_id == drone_id,
-        DroneParamDB.param_name == body.name
-    ).first()
+    p = db.query(DroneParamDB).filter(DroneParamDB.drone_id == drone_id, DroneParamDB.param_name == body.name).first()
     if p:
         p.param_value = body.value
         p.param_type = body.param_type
     else:
-        db.add(DroneParamDB(drone_id=drone_id, param_name=body.name,
-                             param_value=body.value, param_type=body.param_type))
+        db.add(DroneParamDB(drone_id=drone_id, param_name=body.name, param_value=body.value, param_type=body.param_type))
     db.commit()
-    await manager.broadcast({"type": "param_updated", "drone_id": drone_id,
-                              "param": body.name, "value": body.value})
+    await manager.broadcast({"type": "param_updated", "drone_id": drone_id, "param": body.name, "value": body.value})
     return {"status": "ok", "param": body.name, "value": body.value}
 
 @app.post("/api/telemetry/update")
 async def update_telemetry(data: dict):
-    """Reçoit la télémétrie du bridge via HTTP POST"""
     telemetry = data.get("telemetry", {})
     msg_type = telemetry.get("type", "")
-    
     print(f"📥 Télémétrie reçue: {msg_type}")
-    
-    # Mettre à jour la télémétrie en fonction du type de message
     if msg_type == "GLOBAL_POSITION_INT":
         lat = telemetry.get("latitude", 0)
         lon = telemetry.get("longitude", 0)
         alt = telemetry.get("altitude", 0)
         heading = telemetry.get("heading", 0)
-        
         print(f"📍 GPS REÇU: lat={lat}, lon={lon}, alt={alt}")
-        
         mavlink_manager.telemetry["latitude"] = lat
         mavlink_manager.telemetry["longitude"] = lon
         mavlink_manager.telemetry["altitude"] = alt
         mavlink_manager.telemetry["heading"] = heading
         mavlink_manager.is_connected = True
-        
     elif msg_type == "VFR_HUD":
         speed = telemetry.get("speed", 0)
         heading = telemetry.get("heading", 0)
         altitude = telemetry.get("altitude", 0)
-        
         mavlink_manager.telemetry["speed"] = speed
         mavlink_manager.telemetry["heading"] = heading
         if altitude > 0:
             mavlink_manager.telemetry["altitude"] = altitude
         print(f"📊 VFR_HUD: speed={speed}, heading={heading}")
-        
     elif msg_type == "SYS_STATUS":
         battery = telemetry.get("battery", 0)
-        voltage = telemetry.get("voltage", 0)
         mavlink_manager.telemetry["battery"] = battery if battery > 0 else 0
         print(f"🔋 Batterie: {mavlink_manager.telemetry['battery']}%")
-        
     elif msg_type == "HEARTBEAT":
         mode = telemetry.get("mode", "STABILIZE")
         armed = telemetry.get("armed", False)
-        
         mavlink_manager.telemetry["mode"] = mode
         mavlink_manager._armed_status = armed
         mavlink_manager.is_connected = True
         print(f"📥 HEARTBEAT: mode={mode}, armed={armed}")
-    
-    # Mettre à jour le drone USB dans la base de données
     db = SessionLocal()
     try:
         drone = db.query(DroneDB).filter(DroneDB.id == "USB-DRONE").first()
@@ -1527,8 +1353,6 @@ async def update_telemetry(data: dict):
         print(f"⚠️ Erreur DB: {e}")
     finally:
         db.close()
-    
-    # Diffuser au frontend via WebSocket
     await manager.broadcast({
         "type": "telemetry",
         "drones": [{
@@ -1544,24 +1368,18 @@ async def update_telemetry(data: dict):
         }],
         "timestamp": datetime.utcnow().isoformat()
     })
-    
     return {"status": "ok"}
 
-# ─────────────────────────────────────────────────────────────
-#  FLIGHTS & MAINTENANCE ROUTES
-# ─────────────────────────────────────────────────────────────
+# ─── ROUTES FLIGHTS & MAINTENANCE ────────────────────────────
 @app.post("/api/drones/{drone_id}/start_mission")
-async def start_mission_flight(drone_id: str, mission_name: str = "Mission",
-                                db: Session = Depends(get_db), user=Depends(get_user)):
+async def start_mission_flight(drone_id: str, mission_name: str = "Mission", db: Session = Depends(get_db), user=Depends(get_user)):
     drone = db.query(DroneDB).filter(DroneDB.id == drone_id).first()
     if not drone:
         raise HTTPException(404, "Drone introuvable")
-    prev = db.query(DroneFlightDB).filter(DroneFlightDB.drone_id == drone_id,
-                                           DroneFlightDB.end_time.is_(None)).first()
+    prev = db.query(DroneFlightDB).filter(DroneFlightDB.drone_id == drone_id, DroneFlightDB.end_time.is_(None)).first()
     if prev:
         prev.end_time = datetime.utcnow()
-    flight = DroneFlightDB(drone_id=drone_id, start_time=datetime.utcnow(),
-                            mission_name=mission_name, trajectory=[])
+    flight = DroneFlightDB(drone_id=drone_id, start_time=datetime.utcnow(), mission_name=mission_name, trajectory=[])
     db.add(flight)
     drone.status = "flying"
     if drone_id != "USB-DRONE":
@@ -1572,8 +1390,7 @@ async def start_mission_flight(drone_id: str, mission_name: str = "Mission",
 
 @app.post("/api/drones/{drone_id}/end_mission")
 async def end_mission_flight(drone_id: str, db: Session = Depends(get_db), user=Depends(get_user)):
-    flight = db.query(DroneFlightDB).filter(DroneFlightDB.drone_id == drone_id,
-                                             DroneFlightDB.end_time.is_(None)).first()
+    flight = db.query(DroneFlightDB).filter(DroneFlightDB.drone_id == drone_id, DroneFlightDB.end_time.is_(None)).first()
     if not flight:
         raise HTTPException(404, "Aucun vol actif")
     flight.end_time = datetime.utcnow()
@@ -1587,97 +1404,26 @@ async def end_mission_flight(drone_id: str, db: Session = Depends(get_db), user=
 
 @app.get("/api/drones/{drone_id}/flights")
 async def get_flights(drone_id: str, db: Session = Depends(get_db), user=Depends(get_user)):
-    flights = db.query(DroneFlightDB).filter(
-        DroneFlightDB.drone_id == drone_id).order_by(desc(DroneFlightDB.start_time)).all()
-    return [{"id": f.id, "start": f.start_time, "end": f.end_time,
-             "distance": f.distance_km, "mission": f.mission_name} for f in flights]
+    flights = db.query(DroneFlightDB).filter(DroneFlightDB.drone_id == drone_id).order_by(desc(DroneFlightDB.start_time)).all()
+    return [{"id": f.id, "start": f.start_time, "end": f.end_time, "distance": f.distance_km, "mission": f.mission_name} for f in flights]
 
 @app.post("/api/drones/{drone_id}/maintenance")
-async def schedule_maint(drone_id: str, body: dict,
-                          db: Session = Depends(get_db), user=Depends(get_user)):
+async def schedule_maint(drone_id: str, body: dict, db: Session = Depends(get_db), user=Depends(get_user)):
     try:
         date = datetime.fromisoformat(body["date"])
     except Exception:
         raise HTTPException(400, "Date invalide (format: YYYY-MM-DD)")
-    m = MaintenanceDB(drone_id=drone_id, scheduled_date=date,
-                      description=body.get("description", "Maintenance périodique"))
+    m = MaintenanceDB(drone_id=drone_id, scheduled_date=date, description=body.get("description", "Maintenance périodique"))
     db.add(m)
     db.commit()
     return {"status": "scheduled", "id": m.id}
 
 @app.get("/api/drones/{drone_id}/maintenances")
 async def get_maintenances(drone_id: str, db: Session = Depends(get_db), user=Depends(get_user)):
-    mts = db.query(MaintenanceDB).filter(
-        MaintenanceDB.drone_id == drone_id).order_by(desc(MaintenanceDB.scheduled_date)).all()
-    return [{"id": m.id, "date": m.scheduled_date, "desc": m.description,
-             "status": m.status} for m in mts]
+    mts = db.query(MaintenanceDB).filter(MaintenanceDB.drone_id == drone_id).order_by(desc(MaintenanceDB.scheduled_date)).all()
+    return [{"id": m.id, "date": m.scheduled_date, "desc": m.description, "status": m.status} for m in mts]
 
-
-# ─────────────────────────────────────────────────────────────
-#  WEBSOCKET
-# ─────────────────────────────────────────────────────────────
-@app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await manager.connect(ws)
-    try:
-        db = SessionLocal()
-        drones = db.query(DroneDB).all()
-        alerts = db.query(AlertDB).order_by(desc(AlertDB.timestamp)).limit(30).all()
-        missions = db.query(MissionDB).filter(MissionDB.status == "active").all()
-        db.close()
-
-        # S'assurer que le drone USB est dans la liste
-        usb_drone = next((d for d in drones if d.id == "USB-DRONE"), None)
-        if usb_drone and mavlink_manager.is_connected:
-            usb_drone.latitude = mavlink_manager.telemetry["latitude"]
-            usb_drone.longitude = mavlink_manager.telemetry["longitude"]
-            usb_drone.altitude = mavlink_manager.telemetry["altitude"]
-
-        await manager.send_to(ws, {
-            "type": "init",
-            "drones": [serialize(d) for d in drones],
-            "alerts": [serialize(a) for a in alerts],
-            "missions": [serialize(m) for m in missions],
-        })
-
-        while True:
-            await asyncio.sleep(0.5)
-            if mavlink_manager.is_connected:
-                tel = mavlink_manager.telemetry
-                await manager.broadcast({
-                    "type": "telemetry",
-                    "drones": [{
-                        "id": "USB-DRONE",
-                        "latitude": tel.get("latitude", 0),
-                        "longitude": tel.get("longitude", 0),
-                        "altitude": tel.get("altitude", 0),
-                        "speed": tel.get("speed", 0),
-                        "heading": tel.get("heading", 0),
-                        "battery": tel.get("battery", 0),
-                        "armed": mavlink_manager.get_armed_status(),
-                        "status": "flying" if mavlink_manager.get_armed_status() else "idle"
-                    }],
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-
-            try:
-                data = await asyncio.wait_for(ws.receive_text(), timeout=0.5)
-                msg = json.loads(data)
-                if msg.get("type") == "ping":
-                    await manager.send_to(ws, {"type": "pong", "timestamp": datetime.utcnow().isoformat()})
-            except asyncio.TimeoutError:
-                pass
-
-    except WebSocketDisconnect:
-        manager.disconnect(ws)
-    except Exception as e:
-        print(f"[WS] Erreur: {e}")
-        manager.disconnect(ws)
-
-
-# ─────────────────────────────────────────────────────────────
-#  HEALTH
-# ─────────────────────────────────────────────────────────────
+# ─── HEALTH ──────────────────────────────────────────────────
 @app.get("/health")
 async def health():
     return {
@@ -1688,37 +1434,24 @@ async def health():
         "mavlink_armed": mavlink_manager.get_armed_status()
     }
 
-
-# ─────────────────────────────────────────────────────────────
-#  FRONTEND STATIC FILES
-# ─────────────────────────────────────────────────────────────
-# Chemin absolu vers le frontend dans le conteneur Docker
+# ─── FRONTEND STATIC ──────────────────────────────────────────
 frontend_path = "/app/frontend/dist"
-
-# Servir le frontend à la racine
 if os.path.exists(frontend_path) and os.path.exists(os.path.join(frontend_path, "index.html")):
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
     print(f"✅ Frontend servis depuis {frontend_path}")
 else:
-    # Fallback : servir le frontend depuis le dossier local
     local_frontend = os.path.join(os.path.dirname(__file__), "../frontend/dist")
     if os.path.exists(local_frontend) and os.path.exists(os.path.join(local_frontend, "index.html")):
         app.mount("/", StaticFiles(directory=local_frontend, html=True), name="frontend")
         print(f"✅ Frontend servis depuis {local_frontend}")
     else:
-        print(f"❌ Frontend non trouvé ni dans {frontend_path} ni dans {local_frontend}")
         @app.get("/")
         async def root():
             return {"message": "Bienvenue sur JAMBAAR API", "docs": "/docs"}
-        
         @app.get("/{path:path}")
         async def catch_all(path: str):
             return {"detail": "Frontend non disponible. API disponible sur /docs"}
 
-
-# ─────────────────────────────────────────────────────────────
-#  MAIN EXECUTION
-# ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
