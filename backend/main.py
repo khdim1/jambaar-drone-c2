@@ -841,8 +841,11 @@ async def login(req: LoginRequest):
     if not user or user["password"] != req.password:
         raise HTTPException(401, "Identifiants incorrects")
     token = create_token({"sub": req.username, "role": user["role"], "name": user["name"]})
-    return LoginResponse(access_token=token, token_type="bearer", user=UserInfo(**user))
-
+return LoginResponse(
+    access_token=token,
+    token_type="bearer",
+    user=UserInfo(username=req.username, role=user["role"], name=user["name"])
+)
 @app.get("/api/auth/me")
 async def me(user=Depends(get_user)):
     return user
