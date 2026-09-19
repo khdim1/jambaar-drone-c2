@@ -834,22 +834,22 @@ def get_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(security)):
         return {"sub": "admin", "role": "admin", "name": "Commandant Diallo"}
     return payload
 
-# ─── ROUTES AUTH ──────────────────────────────────────────────
 @app.post("/api/auth/login", response_model=LoginResponse)
 async def login(req: LoginRequest):
     user = USERS.get(req.username)
     if not user or user["password"] != req.password:
         raise HTTPException(401, "Identifiants incorrects")
     token = create_token({"sub": req.username, "role": user["role"], "name": user["name"]})
-return LoginResponse(
-    access_token=token,
-    token_type="bearer",
-    user=UserInfo(username=req.username, role=user["role"], name=user["name"])
-)
+    return LoginResponse(
+        access_token=token,
+        token_type="bearer",
+        user=UserInfo(username=req.username, role=user["role"], name=user["name"])
+    )
+
+
 @app.get("/api/auth/me")
 async def me(user=Depends(get_user)):
     return user
-
 # ─── WEBSOCKET ─────────────────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
