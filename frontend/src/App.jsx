@@ -118,6 +118,12 @@ html,body,#root{height:100%;overflow:hidden;background:var(--bg);color:var(--tex
 .dc.disconnected{--sc:#999;opacity:0.6;}
 .dc.selected{border-color:var(--accent);background:var(--acc3);box-shadow:0 0 0 1px var(--accent);}
 .dc:hover:not(.selected){border-color:var(--brd2);background:#f5faf5;}
+.car-icon-wrap{background:transparent !important;border:none !important;}
+.cbtn.follow-active{
+  border-color:rgba(0,229,255,0.6); color:#00e5ff;
+  background:rgba(0,229,255,0.1); font-weight:700;
+}
+.cbtn.follow-active:hover:not(:disabled){background:rgba(0,229,255,0.2);}
 @keyframes flash-dc{0%,100%{border-color:var(--red)}50%{border-color:transparent}}
 .dc-name{font-family:var(--title);font-weight:700;font-size:14px;letter-spacing:1px;color:var(--text);}
 .dc-stat-badge{font-family:var(--mono);font-size:9px;padding:1px 6px;border-radius:3px;
@@ -370,6 +376,12 @@ const api = {
   getParams:     (id)      => apiFetch(`/drones/${id}/params`),
   setParam:      (id,n,v,t="INT32") => apiFetch(`/drones/${id}/param`,{method:"POST",body:JSON.stringify({name:n,value:v,param_type:t})}),
   scheduleMaint: (id,data) => apiFetch(`/drones/${id}/maintenance`,{method:"POST",body:JSON.stringify(data)}),
+    getCarPosition:  ()         => apiFetch("/car/position"),
+  setFollow:       (id, active, offsetAlt = 30, offsetDist = 0) =>
+    apiFetch("/follow", { method:"POST", body:JSON.stringify({
+      drone_id: id, active, offset_alt: offsetAlt, offset_dist: offsetDist
+    })}),
+  getFollow:       ()         => apiFetch("/follow"),
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -557,7 +569,32 @@ function makeBaseIcon(){
     className:"base-icon-wrap", iconSize:[34,34], iconAnchor:[17,17], popupAnchor:[0,-17],
   });
 }
-
+function makeCarIcon(heading = 0, followActive = false) {
+  const ring = followActive ? `
+    <circle cx="20" cy="20" r="18" fill="none" stroke="#00e5ff" stroke-width="2"
+      stroke-dasharray="6 4" opacity="0.9">
+      <animateTransform attributeName="transform" type="rotate"
+        from="0 20 20" to="360 20 20" dur="3s" repeatCount="indefinite"/>
+    </circle>` : "";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+    ${ring}
+    <g transform="rotate(${heading} 20 20)">
+      <rect x="11" y="14" width="18" height="12" rx="2" fill="#e65c00" stroke="white" stroke-width="1.5"/>
+      <rect x="14" y="10" width="12" height="5" rx="1" fill="#bf360c" stroke="white" stroke-width="1"/>
+      <circle cx="14" cy="27" r="2.5" fill="#333" stroke="white" stroke-width="1"/>
+      <circle cx="26" cy="27" r="2.5" fill="#333" stroke="white" stroke-width="1"/>
+      <polygon points="20,4 17,9 23,9" fill="#e65c00"/>
+    </g>
+    ${followActive ? `<circle cx="32" cy="8" r="5" fill="#00e5ff" stroke="white" stroke-width="1.5">
+      <animate attributeName="opacity" values="1;0.3;1" dur="1.5s" repeatCount="indefinite"/>
+    </circle>` : ""}
+  </svg>`;
+  return L.divIcon({
+    html: `<div style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;">${svg}</div>`,
+    className: "car-icon-wrap",
+    iconSize: [40, 40], iconAnchor: [20, 20], popupAnchor: [0, -22],
+  });
+}
 // ─────────────────────────────────────────────────────────────
 //  COMPOSANTS CARTE
 // ─────────────────────────────────────────────────────────────
@@ -581,7 +618,8 @@ function MapClickHandler({ active, onAdd }) {
 }
 
 function DroneMap({ drones, alerts, selectedDroneId, onSelectDrone, trajectories,
-  waypoints, addingWaypoints, onAddWaypoint, mapCenter, mapZoom, baseStation, missionRoutes }) {
+  waypoints, addingWaypoints, onAddWaypoint, mapCenter, mapZoom, baseStation, missionRoutes,
+  carPosition, followActive }) {   // <-- AJOUTER
 
   const validDrones = useMemo(() =>
     drones.filter(d =>
@@ -636,7 +674,31 @@ function DroneMap({ drones, alerts, selectedDroneId, onSelectDrone, trajectories
           </React.Fragment>
         );
       })}
-
+      {carPosition && carPosition.available && (
+        <React.Fragment>
+          <Marker position={[carPosition.lat, carPosition.lon]}
+            icon={makeCarIcon(carPosition.heading || 0, followActive)}
+            zIndexOffset={1500}>
+            <Popup>
+              <div style={{fontFamily:"monospace",fontSize:11,minWidth:200}}>
+                <b style={{color:"#e65c00",fontSize:13}}>🚗 Voiture cible</b>
+                {followActive && <span style={{marginLeft:6,color:"#00e5ff",fontSize:9}}>● SUIVI</span>}
+                <br/><br/>
+                📍 {carPosition.lat.toFixed(6)}, {carPosition.lon.toFixed(6)}<br/>
+                ➜ Vitesse : {((carPosition.speed||0) * 3.6).toFixed(1)} km/h<br/>
+                🧭 Cap : {(carPosition.heading||0).toFixed(0)}°<br/>
+                <span style={{fontSize:10,color:"#666"}}>
+                  Dernière MAJ : {fmtTime(carPosition.timestamp)}
+                </span>
+              </div>
+            </Popup>
+          </Marker>
+          {carPosition.speed > 0.5 && (
+            <Circle center={[carPosition.lat, carPosition.lon]} radius={30}
+              pathOptions={{fillColor:"#e65c00",fillOpacity:0.15,color:"#e65c00",weight:1.5,opacity:0.4}}/>
+          )}
+        </React.Fragment>
+      )}
       {Object.entries(trajectories).map(([droneId,pts])=>{
         if(!pts||pts.length<2) return null;
         const vpts=pts.filter(p=>typeof p.lat==="number"&&isFinite(p.lat)&&typeof p.lng==="number"&&isFinite(p.lng));
@@ -1828,6 +1890,10 @@ export default function App() {
   const [time,            setTime]            = useState(new Date());
   const [videoActive,     setVideoActive]     = useState({});
   const [mixMode,         setMixMode]         = useState(false);
+    // ── Suivi de voiture ────────────────────────────────────────
+  const [carPosition,  setCarPosition]  = useState(null);
+  const [followActive, setFollowActive] = useState(false);
+  const [followDrone,  setFollowDrone]  = useState("USB-DRONE");
 
   // ── État armé — géré via vote majority ────────────────────
   // armedState est le state React visible dans le rendu
@@ -1901,6 +1967,29 @@ export default function App() {
       ws.onclose=()=>{ setTimeout(connect,3000); };
     };
     connect();
+      // ── Polling position voiture (toutes les 3s) ───────────────
+  useEffect(() => {
+    if (!user) return;
+    const poll = async () => {
+      try {
+        const [pos, followStates] = await Promise.all([
+          api.getCarPosition(),
+          api.getFollow()
+        ]);
+        if (pos.available) setCarPosition(pos);
+        const active = (followStates || []).find(f => f.active);
+        if (active) {
+          setFollowActive(true);
+          setFollowDrone(active.drone_id);
+        } else {
+          setFollowActive(false);
+        }
+      } catch (_) {}
+    };
+    poll();
+    const t = setInterval(poll, 3000);
+    return () => clearInterval(t);
+  }, [user]);
     return()=>{ if(wsRef.current){wsRef.current.onclose=null;wsRef.current.close();} };
   },[user]);
 
@@ -2004,6 +2093,20 @@ const handleWsMsg = useCallback((msg) => {
 
         case "command_ack":
             notify("success", "✓ Commande", "Exécutée", 4000);
+            break;
+                    case "car_position":
+            if (msg.car) setCarPosition({ ...msg.car, available: true });
+            break;
+
+        case "follow_state":
+            setFollowActive(msg.active);
+            if (msg.active) {
+              setFollowDrone(msg.drone_id);
+              notify("success", "🚗 Suivi activé",
+                `Drone ${msg.drone_id} suit la voiture`, 4000);
+            } else {
+              notify("info", "Suivi désactivé", "", 3000);
+            }
             break;
 
         default:
@@ -2398,6 +2501,19 @@ const sendCommand = useCallback(async (action, params = {}) => {
             <span style={{display:"flex",alignItems:"center",gap:5,fontFamily:"var(--mono)",fontSize:10,color:"rgba(255,255,255,0.8)"}}>
               <span className={`dot ${redAlerts.length>0?"alert":"warn"}`}/>{activeAlerts.length} ALERTES
             </span>
+            
+          )}
+                    {followActive && (
+            <span style={{
+              display:"flex", alignItems:"center", gap:5,
+              fontFamily:"var(--mono)", fontSize:10,
+              color:"#00e5ff", fontWeight:700,
+              background:"rgba(0,229,255,0.15)",
+              border:"1px solid rgba(0,229,255,0.4)",
+              padding:"3px 10px", borderRadius:20
+            }}>
+              🚗 SUIVI VOITURE
+            </span>
           )}
           <span style={{fontFamily:"var(--mono)",fontSize:12,color:"rgba(255,255,255,0.9)",letterSpacing:2}}>{time.toLocaleTimeString("fr-FR")}</span>
           <div style={{display:"flex",alignItems:"center",gap:8,padding:"3px 10px 3px 4px",background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:20}}>
@@ -2473,7 +2589,7 @@ const sendCommand = useCallback(async (action, params = {}) => {
               <div className="scanline"/>
               {addingWaypoints&&<div className="wp-hint">🖱️ Mode ajout waypoints — cliquez sur la carte</div>}
               <div style={{position:"absolute",top:38,left:0,right:0,bottom:0}}>
-                <DroneMap drones={drones} alerts={alerts} selectedDroneId={selectedDroneId} onSelectDrone={d=>{setSelectedDroneId(d.id);setRightTab("detail");}} trajectories={trajectories} waypoints={newWaypoints} addingWaypoints={addingWaypoints} onAddWaypoint={(lat,lng)=>setNewWaypoints(p=>[...p,{lat,lng}])} mapCenter={mapCenter} mapZoom={mapZoom} baseStation={baseStation} missionRoutes={missionRoutes}/>
+                <DroneMap drones={drones} alerts={alerts} selectedDroneId={selectedDroneId} onSelectDrone={d=>{setSelectedDroneId(d.id);setRightTab("detail");}} trajectories={trajectories} waypoints={newWaypoints} addingWaypoints={addingWaypoints} onAddWaypoint={(lat,lng)=>setNewWaypoints(p=>[...p,{lat,lng}])} mapCenter={mapCenter} mapZoom={mapZoom} baseStation={baseStation} missionRoutes={missionRoutes} carPosition={carPosition} followActive={followActive} />
               </div>
             </>
           )}
@@ -2528,7 +2644,7 @@ const sendCommand = useCallback(async (action, params = {}) => {
           {page==="missions"&&(
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",height:"100%",overflow:"hidden"}}>
               <div style={{position:"relative",overflow:"hidden"}}>
-                <DroneMap drones={drones} alerts={[]} selectedDroneId={selectedDroneId} onSelectDrone={d=>setSelectedDroneId(d.id)} trajectories={{}} waypoints={newWaypoints} addingWaypoints={addingWaypoints} onAddWaypoint={(lat,lng)=>setNewWaypoints(p=>[...p,{lat,lng}])} mapCenter={mapCenter} mapZoom={mapZoom} baseStation={baseStation} missionRoutes={missionRoutes}/>
+                <DroneMap drones={drones} alerts={[]} selectedDroneId={selectedDroneId} onSelectDrone={d=>setSelectedDroneId(d.id)} trajectories={{}} waypoints={newWaypoints} addingWaypoints={addingWaypoints} onAddWaypoint={(lat,lng)=>setNewWaypoints(p=>[...p,{lat,lng}])} mapCenter={mapCenter} mapZoom={mapZoom} baseStation={baseStation} missionRoutes={missionRoutes} carPosition={carPosition} followActive={followActive}/>
                 {addingWaypoints&&<div className="wp-hint">🖱️ Cliquez pour ajouter des waypoints</div>}
               </div>
               <div style={{overflowY:"auto",padding:12,borderLeft:"1px solid var(--border)",background:"var(--bg2)"}}>
@@ -2794,6 +2910,35 @@ const sendCommand = useCallback(async (action, params = {}) => {
                         <button className="cbtn full" onClick={()=>setRightTab("usb")}>🔌 Configurer connexion</button>
                         <button className="cbtn danger full" onClick={()=>{if(window.confirm("Confirmer urgence ?"))sendCommand("emergency");}}>
                           ⚠️ URGENCE — RTL immédiat
+                        </button>
+                                                {/* ─── SUIVI DE VOITURE ────────────────── */}
+                        <button
+                          className={`cbtn full ${followActive ? "active-mission" : "warn"}`}
+                          style={{padding:"10px",fontSize:11,fontWeight:700}}
+                          disabled={!mav.connected || !armedState}
+                          title={!armedState ? "Armez d'abord le drone" : "Le drone suit la voiture en GUIDED"}
+                          onClick={async () => {
+                            if (!armedState) {
+                              notify("error", "Drone non armé", "Armez le drone d'abord");
+                              return;
+                            }
+                            const newState = !followActive;
+                            try {
+                              await api.setFollow("USB-DRONE", newState, 30, 0);
+                              setFollowActive(newState);
+                              notify(
+                                newState ? "success" : "info",
+                                newState ? "🚗 Suivi activé" : "Suivi désactivé",
+                                newState ? "Le drone suit la voiture à 30m" : "",
+                                4000
+                              );
+                            } catch (e) {
+                              notify("error", "Erreur follow", e.message);
+                            }
+                          }}
+                        >
+                          {followActive ? "🚗 Arrêter le suivi" : "🚗 Suivre la voiture"}
+                          {!armedState && " 🔒"}
                         </button>
                       </>
                     ) : (
