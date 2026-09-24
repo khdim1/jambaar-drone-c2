@@ -1955,7 +1955,6 @@ export default function App() {
   }, [notify]);
 
   useEffect(()=>{ if(!user) return; loadAll(); const t=setInterval(loadAll,10000); return()=>clearInterval(t); },[user,loadAll]);
-
   useEffect(()=>{
     if(!user) return;
     const connect=()=>{
@@ -1992,7 +1991,8 @@ export default function App() {
   }, [user]);
     return()=>{ if(wsRef.current){wsRef.current.onclose=null;wsRef.current.close();} };
   },[user]);
-
+ 
+   
 const handleWsMsg = useCallback((msg) => {
     console.log("📨 Message WebSocket reçu:", msg.type);
     
