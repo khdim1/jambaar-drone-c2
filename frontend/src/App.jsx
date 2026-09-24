@@ -1966,7 +1966,10 @@ export default function App() {
       ws.onclose=()=>{ setTimeout(connect,3000); };
     };
     connect();
-      // ── Polling position voiture (toutes les 3s) ───────────────
+    return()=>{ if(wsRef.current){wsRef.current.onclose=null;wsRef.current.close();} };
+  },[user]);
+
+  // ── Polling position voiture (toutes les 3s) ───────────────
   useEffect(() => {
     if (!user) return;
     const poll = async () => {
@@ -1989,8 +1992,6 @@ export default function App() {
     const t = setInterval(poll, 3000);
     return () => clearInterval(t);
   }, [user]);
-    return()=>{ if(wsRef.current){wsRef.current.onclose=null;wsRef.current.close();} };
-  },[user]);
  
    
 const handleWsMsg = useCallback((msg) => {
