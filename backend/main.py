@@ -17,7 +17,7 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 import serial.tools.list_ports
 import os
-
+import aiohttp
 from pymavlink import mavutil
 from sqlalchemy import create_engine, Column, Integer, Float, String, Boolean, DateTime, JSON, ForeignKey, desc
 from sqlalchemy.ext.declarative import declarative_base
@@ -1553,7 +1553,41 @@ async def schedule_maint(drone_id: str, body: dict, db: Session = Depends(get_db
 async def get_maintenances(drone_id: str, db: Session = Depends(get_db), user=Depends(get_user)):
     mts = db.query(MaintenanceDB).filter(MaintenanceDB.drone_id == drone_id).order_by(desc(MaintenanceDB.scheduled_date)).all()
     return [{"id": m.id, "date": m.scheduled_date, "desc": m.description, "status": m.status} for m in mts]
+# ─── PONT VERS AGRIDATAGOV ────────────────────────────────────
+AGRIDATAGOV_URL = "https://socket.agridatagov.sn/events"
+AGRIDATAGOV_KEY = "f32e06579d376bb678675c7cd59d1983eca1d755e67d03bf351a7684a01dd1b5"
 
+@app.post("/api/agridatagov/events")
+async def forward_to_agridatagov(body: dict):
+    """
+    Reçoit du LilyGO (POST JSON) et forward vers AgriDataGov
+    en ajoutant le header X-Internal-Key obligatoire.
+    """
+    print(f"📥 Reçu du LilyGO: {body}")
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Key": AGRIDATAGOV_KEY
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                AGRIDATAGOV_URL,
+                json=body,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                text = await resp.text()
+                print(f"✅ AgriDataGov HTTP {resp.status}: {text[:200]}")
+                return {
+                    "status": "ok",
+                    "agri_code": resp.status,
+                    "agri_response": text[:300]
+                }
+    except Exception as e:
+        print(f"❌ Erreur forward AgriDataGov: {e}")
+        raise HTTPException(500, f"AgriDataGov unreachable: {str(e)}")
 # ─── HEALTH ──────────────────────────────────────────────────
 @app.get("/health")
 async def health():
