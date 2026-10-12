@@ -382,6 +382,10 @@ const api = {
       drone_id: id, active, offset_alt: offsetAlt, offset_dist: offsetDist
     })}),
   getFollow:       ()         => apiFetch("/follow"),
+    launchMission:  (waypoints, altitude) => apiFetch("/missions/launch", {
+    method: "POST",
+    body: JSON.stringify({ waypoints, altitude })
+  }),
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1250,24 +1254,48 @@ function MissionForm({ drones, onMissionCreated, onNotify, setAddingWaypoints, a
     setWaypoints(p=>[...p,{lat,lng}]); return true;
   };
 
-  const submit = async () => {
-    if (!form.name || !form.droneId) { onNotify("error","Champs manquants","Nom et drone requis"); return; }
-    if (!waypoints.length) { onNotify("error","Aucun waypoint","Ajoutez au moins 1 WP"); return; }
+    const submit = async () => {
+    if (!form.name) { 
+      onNotify("error", "Nom manquant", "Donnez un nom à la mission"); 
+      return; 
+    }
+    if (!waypoints.length) { 
+      onNotify("error", "Aucun waypoint", "Ajoutez au moins 1 WP"); 
+      return; 
+    }
+    
     setSending(true);
     try {
-      const waypointsForMav = waypoints.map(w => ({
-        lat: w.lat, lng: w.lng, alt: Number(form.altitude), loiter_time: Number(form.loiterTime)
-      }));
-      await mav.commands.uploadMission(waypointsForMav);
-      onNotify("success","Mission envoyée !",`${form.name} — ${waypoints.length} waypoints`);
-      onMissionCreated({ mission_name: form.name, waypoints: waypointsForMav }, form.droneId, waypoints);
-      setWaypoints([]); setAddingWaypoints(false);
-      setForm(f=>({...f, name:""}));
+      const wps = waypoints.map(w => ({ lat: w.lat, lng: w.lng }));
+      const alt = Number(form.altitude) || 10;
+      
+      console.log(`🚀 Envoi mission: ${wps.length} WPs @ ${alt}m`);
+      
+      // ✅ Envoyer via BACKEND (pas MAVLink direct)
+      const res = await api.launchMission(wps, alt);
+      
+      onNotify(
+        "success",
+        "🚀 Mission lancée !",
+        `${wps.length} waypoints @ ${alt}m — vol en cours`,
+        6000
+      );
+      
+      // Mettre à jour la carte
+      onMissionCreated(res, "USB-DRONE", waypoints);
+      
+      // Reset formulaire
+      setWaypoints([]);
+      setAddingWaypoints(false);
+      setForm(f => ({ ...f, name: "" }));
+      
     } catch (e) {
-      onNotify("error","Erreur mission",e.message);
-    } finally { setSending(false); }
+      console.error("Erreur mission:", e);
+      onNotify("error", "Erreur mission", e.message);
+    } finally {
+      setSending(false);
+    }
   };
-
   const handleManual = () => {
     const lat = parseFloat(document.getElementById("ml")?.value);
     const lng = parseFloat(document.getElementById("mn")?.value);

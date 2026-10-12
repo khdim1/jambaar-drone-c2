@@ -1610,7 +1610,83 @@ else:
         @app.get("/")
         async def root():
             return {"message": "Bienvenue sur JAMBAAR API", "docs": "/docs"}
+# ═══════════════════════════════════════════════════════════
+#  LANCEMENT DE MISSION DEPUIS L'INTERFACE
+# ═══════════════════════════════════════════════════════════
 
+class WaypointIn(BaseModel):
+    lat: float
+    lng: float
+
+class MissionLaunch(BaseModel):
+    waypoints: List[WaypointIn]
+    altitude: float = 10.0
+
+@app.post("/api/missions/launch")
+async def launch_mission(
+    mission: MissionLaunch,
+    db: Session = Depends(get_db),
+    user=Depends(get_user)
+):
+    """Lance une mission depuis l'interface web"""
+    
+    if not mission.waypoints or len(mission.waypoints) < 1:
+        raise HTTPException(400, "Au moins 1 waypoint requis")
+    
+    if len(mission.waypoints) > 50:
+        raise HTTPException(400, "Maximum 50 waypoints")
+    
+    # Valider les coordonnées
+    for wp in mission.waypoints:
+        if not (-90 <= wp.lat <= 90):
+            raise HTTPException(400, f"Latitude invalide: {wp.lat}")
+        if not (-180 <= wp.lng <= 180):
+            raise HTTPException(400, f"Longitude invalide: {wp.lng}")
+    
+    print(f"🗺️  Mission reçue: {len(mission.waypoints)} WPs @ {mission.altitude}m")
+    
+    # Envoyer au Jetson via Cloudflare
+    waypoints_json = [{"lat": wp.lat, "lng": wp.lng} for wp in mission.waypoints]
+    
+    success = await send_command_to_jetson("mission", {
+        "waypoints": waypoints_json,
+        "altitude": mission.altitude
+    })
+    
+    if not success:
+        raise HTTPException(500, "Échec envoi mission au drone")
+    
+    # Enregistrer en base
+    mission_id = str(uuid.uuid4())
+    db.add(MissionDB(
+        id=mission_id,
+        drone_id="USB-DRONE",
+        name=f"Mission {datetime.utcnow().strftime('%H:%M:%S')}",
+        type="manual",
+        waypoints=waypoints_json,
+        altitude=mission.altitude,
+        status="active",
+        created_at=datetime.utcnow(),
+        created_by=user.get("name", "system")
+    ))
+    db.commit()
+    
+    # Broadcaster
+    await manager.broadcast({
+        "type": "mission_started",
+        "mission_id": mission_id,
+        "drone_id": "USB-DRONE",
+        "waypoints": waypoints_json,
+        "altitude": mission.altitude,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
+    return {
+        "status": "ok",
+        "mission_id": mission_id,
+        "waypoints_count": len(mission.waypoints),
+        "altitude": mission.altitude
+    }
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
